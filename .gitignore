@@ -1,0 +1,26 @@
+# rooteame gitignore
+# Build artifacts
+*.o
+*.ko
+*.mod
+*.mod.c
+*.mod.o
+*.order
+*.symvers
+.*.cmd
+*.tmp_versions/
+modules.order
+Module.symvers
+
+# Editor
+*.swp
+*.swo
+*~
+
+# Python
+__pycache__/
+*.pyc
+
+# IDE
+.vscode/
+.idea/

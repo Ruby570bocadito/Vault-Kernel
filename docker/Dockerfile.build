@@ -1,0 +1,21 @@
+FROM ubuntu:24.04
+
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    build-essential \
+    linux-headers-generic \
+    linux-image-generic \
+    make \
+    kmod \
+    python3 \
+    golang-go \
+    iproute2 \
+    net-tools \
+    procps \
+    && rm -rf /var/lib/apt/lists/*
+
+WORKDIR /build
+
+COPY src/ ./src/
+
+WORKDIR /build/src
+CMD ["make"]

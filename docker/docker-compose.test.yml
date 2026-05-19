@@ -1,0 +1,77 @@
+version: "3.9"
+
+services:
+  # Build environment — compiles the kernel module
+  builder:
+    build:
+      context: ..
+      dockerfile: docker/Dockerfile.build
+    image: rooteame-builder
+    container_name: rooteame-build
+    volumes:
+      - ../src:/build/src
+      - ./out:/build/out
+    command: bash -c "cd /build/src && make && cp *.ko /build/out/ && echo '[+] rooteame.ko built'"
+
+  # Victim machine 1 — Ubuntu with typical services
+  victim-1:
+    image: ubuntu:24.04
+    container_name: rooteame-victim-1
+    command: |
+      bash -c "
+        apt-get update && apt-get install -y openssh-server nginx netcat-openbsd procps net-tools iproute2 &&
+        service ssh start &&
+        service nginx start &&
+        echo '[+] Victim-1 ready (SSH, nginx, netcat)' &&
+        sleep infinity
+      "
+    networks:
+      rooteame-net:
+        ipv4_address: 172.30.0.10
+    cap_add:
+      - NET_ADMIN
+      - SYS_PTRACE
+    volumes:
+      - ./out:/tmp/rootkit:ro
+
+  # Victim machine 2 — minimal Ubuntu
+  victim-2:
+    image: ubuntu:24.04
+    container_name: rooteame-victim-2
+    command: |
+      bash -c "
+        apt-get update && apt-get install -y procps net-tools netcat-openbsd &&
+        echo '[+] Victim-2 ready (minimal)' &&
+        sleep infinity
+      "
+    networks:
+      rooteame-net:
+        ipv4_address: 172.30.0.20
+    cap_add:
+      - NET_ADMIN
+
+  # C2 / attacker machine
+  attacker:
+    image: ubuntu:24.04
+    container_name: rooteame-attacker
+    command: |
+      bash -c "
+        apt-get update && apt-get install -y netcat-openbsd procps net-tools iproute2 curl &&
+        echo '[+] Attacker ready' &&
+        sleep infinity
+      "
+    networks:
+      rooteame-net:
+        ipv4_address: 172.30.0.100
+    cap_add:
+      - NET_ADMIN
+    volumes:
+      - ../client/go/rooteame:/usr/local/bin/rooteame:ro
+      - ./out:/tmp/rootkit:ro
+
+networks:
+  rooteame-net:
+    driver: bridge
+    ipam:
+      config:
+        - subnet: 172.30.0.0/24
