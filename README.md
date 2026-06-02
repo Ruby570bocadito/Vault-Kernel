@@ -223,19 +223,6 @@ bash docker/test.sh down          # Cleanup
 
 ---
 
-## 🗺️ Roadmap
-
-- [ ] ARM64 kernel support
-- [ ] eBPF-based detection evasion
-- [ ] Encrypted keylogger buffer
-- [ ] Automatic kernel version detection + adaptation
-- [ ] Userland rootkit component
-- [ ] Integration with peekaboo for full attack chain
-- [ ] C2 integration (BTY framework)
-
-<br/>
-
----
 
 ## 📚 All CLI Commands
 
