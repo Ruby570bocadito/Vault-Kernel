@@ -1,4 +1,4 @@
-/* rooteame - hooking.c
+/* vault_kernel - hooking.c
  * Syscall hook installation wrapper
  * ruby570bocadito © 2026
  */
@@ -20,7 +20,7 @@ int hooking_init(void) {
     for (i = 0; i < hooks_count; i++) {
         if (hooks[i].table_entry) {
             if (install_hook(&hooks[i])) {
-                pr_warn(ROOTEAME_TAG " failed to hook %s\n", hooks[i].name);
+                pr_warn(VAULT_KERNEL_TAG " failed to hook %s\n", hooks[i].name);
             }
         }
     }
@@ -40,5 +40,5 @@ void hooking_cleanup(void) {
      * while we unload the module → kernel panic.
      */
     synchronize_rcu();
-    pr_info(ROOTEAME_TAG " all hooks removed and RCU-synchronized\n");
+    pr_info(VAULT_KERNEL_TAG " all hooks removed and RCU-synchronized\n");
 }

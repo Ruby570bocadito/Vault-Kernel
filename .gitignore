@@ -1,4 +1,4 @@
-# rooteame gitignore
+# vault_kernel gitignore
 # Build artifacts
 *.o
 *.ko
@@ -24,3 +24,6 @@ __pycache__/
 # IDE
 .vscode/
 .idea/
+
+# Go binaries
+client/go/vault_kernel

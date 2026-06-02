@@ -5,19 +5,19 @@ services:
     build:
       context: ..
       dockerfile: docker/Dockerfile.build
-    image: rooteame-builder
-    container_name: rooteame-build
+    image: vault_kernel-builder
+    container_name: vault_kernel-build
     volumes:
       - ../src:/build/src
       - ./out:/build/out
-    command: bash -c "make && cp *.ko /build/out/ && echo '[+] Build complete — rooteame.ko in docker/out/'"
+    command: bash -c "make && cp *.ko /build/out/ && echo '[+] Build complete — vault_kernel.ko in docker/out/'"
 
   test-victim:
     image: ubuntu:24.04
-    container_name: rooteame-victim-1
+    container_name: vault_kernel-victim-1
     command: sleep infinity
     networks:
-      - rooteame-net
+      - vault_kernel-net
     cap_add:
       - NET_ADMIN
     volumes:
@@ -25,22 +25,22 @@ services:
 
   test-victim-2:
     image: ubuntu:24.04
-    container_name: rooteame-victim-2
+    container_name: vault_kernel-victim-2
     command: sleep infinity
     networks:
-      - rooteame-net
+      - vault_kernel-net
     volumes:
       - ./out:/tmp/rootkit
 
   test-c2:
     image: ubuntu:24.04
-    container_name: rooteame-c2
+    container_name: vault_kernel-c2
     command: sleep infinity
     networks:
-      - rooteame-net
+      - vault_kernel-net
 
 networks:
-  rooteame-net:
+  vault_kernel-net:
     driver: bridge
     ipam:
       config:

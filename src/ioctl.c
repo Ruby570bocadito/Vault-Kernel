@@ -1,15 +1,15 @@
-/* rooteame - ioctl.c
+/* vault_kernel - ioctl.c
  * Character device interface for userland control
  * ruby570bocadito © 2026
  */
 #include "core.h"
 
-static dev_t rooteame_dev;
-static struct class *rooteame_class = NULL;
-static struct cdev rooteame_cdev;
+static dev_t vault_kernel_dev;
+static struct class *vault_kernel_class = NULL;
+static struct cdev vault_kernel_cdev;
 static int dev_major = 0;
 
-static long rooteame_ioctl(struct file *file, unsigned int cmd,
+static long vault_kernel_ioctl(struct file *file, unsigned int cmd,
                            unsigned long arg) {
     char kbuf[4096];
     int ret, pid_int;
@@ -147,71 +147,71 @@ static long rooteame_ioctl(struct file *file, unsigned int cmd,
     return 0;
 }
 
-static int rooteame_open(struct inode *inode, struct file *file) {
+static int vault_kernel_open(struct inode *inode, struct file *file) {
     return 0;
 }
 
-static int rooteame_release(struct inode *inode, struct file *file) {
+static int vault_kernel_release(struct inode *inode, struct file *file) {
     return 0;
 }
 
-static struct file_operations rooteame_fops = {
+static struct file_operations vault_kernel_fops = {
     .owner          = THIS_MODULE,
-    .unlocked_ioctl = rooteame_ioctl,
-    .open           = rooteame_open,
-    .release        = rooteame_release,
+    .unlocked_ioctl = vault_kernel_ioctl,
+    .open           = vault_kernel_open,
+    .release        = vault_kernel_release,
 };
 
 int ioctl_init(void) {
     int ret;
 
     /* Allocate device number */
-    ret = alloc_chrdev_region(&rooteame_dev, 0, 1, DEVICE_NAME);
+    ret = alloc_chrdev_region(&vault_kernel_dev, 0, 1, DEVICE_NAME);
     if (ret < 0) {
-        pr_err(ROOTEAME_TAG " failed to allocate chrdev (%d)\n", ret);
+        pr_err(VAULT_KERNEL_TAG " failed to allocate chrdev (%d)\n", ret);
         return ret;
     }
-    dev_major = MAJOR(rooteame_dev);
+    dev_major = MAJOR(vault_kernel_dev);
 
     /* Create device class (visible in /sys/class) */
 #if LINUX_VERSION_CODE >= KERNEL_VERSION(6,4,0)
-    rooteame_class = class_create(DEVICE_NAME);
+    vault_kernel_class = class_create(DEVICE_NAME);
 #else
-    rooteame_class = class_create(THIS_MODULE, DEVICE_NAME);
+    vault_kernel_class = class_create(THIS_MODULE, DEVICE_NAME);
 #endif
-    if (IS_ERR(rooteame_class)) {
-        unregister_chrdev_region(rooteame_dev, 1);
-        return PTR_ERR(rooteame_class);
+    if (IS_ERR(vault_kernel_class)) {
+        unregister_chrdev_region(vault_kernel_dev, 1);
+        return PTR_ERR(vault_kernel_class);
     }
 
     /* Create device node */
-    if (!device_create(rooteame_class, NULL, rooteame_dev,
+    if (!device_create(vault_kernel_class, NULL, vault_kernel_dev,
                        NULL, DEVICE_NAME)) {
-        class_destroy(rooteame_class);
-        unregister_chrdev_region(rooteame_dev, 1);
+        class_destroy(vault_kernel_class);
+        unregister_chrdev_region(vault_kernel_dev, 1);
         return -ENODEV;
     }
 
     /* Initialize cdev */
-    cdev_init(&rooteame_cdev, &rooteame_fops);
-    ret = cdev_add(&rooteame_cdev, rooteame_dev, 1);
+    cdev_init(&vault_kernel_cdev, &vault_kernel_fops);
+    ret = cdev_add(&vault_kernel_cdev, vault_kernel_dev, 1);
     if (ret) {
-        device_destroy(rooteame_class, rooteame_dev);
-        class_destroy(rooteame_class);
-        unregister_chrdev_region(rooteame_dev, 1);
+        device_destroy(vault_kernel_class, vault_kernel_dev);
+        class_destroy(vault_kernel_class);
+        unregister_chrdev_region(vault_kernel_dev, 1);
         return ret;
     }
 
-    pr_info(ROOTEAME_TAG " char device /dev/%s (major %d)\n",
+    pr_info(VAULT_KERNEL_TAG " char device /dev/%s (major %d)\n",
             DEVICE_NAME, dev_major);
     return 0;
 }
 
 void ioctl_cleanup(void) {
-    cdev_del(&rooteame_cdev);
-    device_destroy(rooteame_class, rooteame_dev);
-    class_destroy(rooteame_class);
-    unregister_chrdev_region(rooteame_dev, 1);
+    cdev_del(&vault_kernel_cdev);
+    device_destroy(vault_kernel_class, vault_kernel_dev);
+    class_destroy(vault_kernel_class);
+    unregister_chrdev_region(vault_kernel_dev, 1);
 
-    pr_info(ROOTEAME_TAG " char device removed\n");
+    pr_info(VAULT_KERNEL_TAG " char device removed\n");
 }

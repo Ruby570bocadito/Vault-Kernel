@@ -1,4 +1,4 @@
-# rooteame — Architecture Decision Record (ADR)
+# vault_kernel — Architecture Decision Record (ADR)
 
 > ruby570bocadito © 2026
 > Versión: 3.0.0
@@ -37,8 +37,8 @@
 │                  USERLAND                      │
 │                                                │
 │  ┌──────────────┐    ioctl()     ┌───────────┐ │
-│  │ rooteame CLI │◄──────────────►│ /dev/     │ │
-│  │   (Go)       │                │ rooteame  │ │
+│  │ vault_kernel CLI │◄──────────────►│ /dev/     │ │
+│  │   (Go)       │                │ vault_kernel  │ │
 │  └──────────────┘                └─────┬─────┘ │
 │                                        │       │
 ├────────────────────────────────────────┼───────┤
@@ -129,8 +129,8 @@ CR0 WP bit manipulation (`read_cr0`/`write_cr0`) — estándar en rootkits, más
 | `backdoor.c` | Reverse shell workqueue, magic packet trigger | 116 |
 | `priv_esc.c` | give_root via cred manipulation | ~40 |
 | `stealth.c` | Module hiding/unhiding, list_del, kobject operations | 66 |
-| `ioctl.c` | Char device /dev/rooteame, ioctl dispatch | 198 |
-| `client/rooteame_cli.py` | Python CLI (será reemplazada por Go) | ~280 |
+| `ioctl.c` | Char device /dev/vault_kernel, ioctl dispatch | 198 |
+| `client/vault_kernel_cli.py` | Python CLI (será reemplazada por Go) | ~280 |
 
 ---
 
@@ -138,7 +138,7 @@ CR0 WP bit manipulation (`read_cr0`/`write_cr0`) — estándar en rootkits, más
 
 | ID | Severidad | Archivo | Descripción |
 |----|-----------|---------|-------------|
-| B01 | Medium | `ioctl.c:8` vs `core.h:96` | `rooteame_class` declarado como `static` y `extern` simultáneamente — conflicto de linkage |
+| B01 | Medium | `ioctl.c:8` vs `core.h:96` | `vault_kernel_class` declarado como `static` y `extern` simultáneamente — conflicto de linkage |
 | B02 | High | `ioctl.c:71-82` | Buffer overflow en LIST_HIDDEN: `snprintf(p, 256, ...)` debe usar `sizeof(kbuf) - (p - kbuf)` |
 | B03 | Medium | `net_hide.c:138-144` | `fdput(f)` no se llama si `f.file` es NULL (aunque `fdput` maneja NULL, falta la llamada) |
 | B04 | Low | `net_hide.c:114` | `kern_path` puede dormir — no debería llamarse desde contexto atómico; init corre en contexto seguro |

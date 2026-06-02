@@ -1,12 +1,12 @@
-# rooteame - Kernel Rootkit
+# vault_kernel - Kernel Rootkit
 # ruby570bocadito © 2026
 #
 # Build: make
-# Load:  sudo insmod rooteame.ko
-# Unload: sudo rmmod rooteame
+# Load:  sudo insmod vault_kernel.ko
+# Unload: sudo rmmod vault_kernel
 
 KERNEL := $(shell uname -r)
-MODNAME := rooteame
+MODNAME := vault_kernel
 KDIR := /lib/modules/$(KERNEL)/build
 PWD := $(shell pwd)
 
@@ -53,9 +53,9 @@ info:
 	modinfo $(MODNAME).ko 2>/dev/null || echo "Module not built yet. Run 'make' first."
 
 dmesg:
-	@sudo dmesg | grep "\[rooteame\]" | tail -20
+	@sudo dmesg | grep "\[vault_kernel\]" | tail -20
 
 test:
-	@python3 ../client/rooteame_cli.py status
+	@python3 ../client/vault_kernel_cli.py status
 
 .PHONY: all module clean purge load unload reload info dmesg test

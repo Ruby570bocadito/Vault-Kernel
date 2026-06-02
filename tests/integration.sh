@@ -1,6 +1,6 @@
 #!/bin/bash
-# rooteame — Integration Test Suite
-# Run this on a VM where the rooteame kernel module is loaded.
+# vault_kernel — Integration Test Suite
+# Run this on a VM where the vault_kernel kernel module is loaded.
 # Usage: sudo bash tests/integration.sh
 
 set -euo pipefail
@@ -12,7 +12,7 @@ NC='\033[0m'
 
 PASS=0
 FAIL=0
-DEVICE="/dev/rooteame"
+DEVICE="/dev/vault_kernel"
 CLI=""  # set below
 
 cleanup() {
@@ -36,19 +36,19 @@ run_test() {
 # ================================================================
 
 echo "=========================================="
-echo " rooteame Integration Tests"
+echo " vault_kernel Integration Tests"
 echo "=========================================="
 
 # Detect CLI
-if [ -f "$(dirname "$0")/../client/go/rooteame" ]; then
-    CLI="$(dirname "$0")/../client/go/rooteame"
-elif command -v rooteame &>/dev/null; then
-    CLI="rooteame"
-elif [ -f "$(dirname "$0")/../client/rooteame_cli.py" ]; then
+if [ -f "$(dirname "$0")/../client/go/vault_kernel" ]; then
+    CLI="$(dirname "$0")/../client/go/vault_kernel"
+elif command -v vault_kernel &>/dev/null; then
+    CLI="vault_kernel"
+elif [ -f "$(dirname "$0")/../client/vault_kernel_cli.py" ]; then
     echo "[!] Go client not found, using Python fallback (limited tests)"
-    CLI="python3 $(dirname "$0")/../client/rooteame_cli.py"
+    CLI="python3 $(dirname "$0")/../client/vault_kernel_cli.py"
 else
-    echo "[-] No client found. Build the Go client first: cd client/go && go build -o rooteame ./cmd/rooteame/"
+    echo "[-] No client found. Build the Go client first: cd client/go && go build -o vault_kernel ./cmd/vault_kernel/"
     exit 1
 fi
 
@@ -56,8 +56,8 @@ echo "[*] Using client: $CLI"
 
 # Check if module is loaded
 if [ ! -e "$DEVICE" ]; then
-    echo "[-] rooteame not loaded ($DEVICE not found)"
-    echo "    Run: sudo insmod src/rooteame.ko"
+    echo "[-] vault_kernel not loaded ($DEVICE not found)"
+    echo "    Run: sudo insmod src/vault_kernel.ko"
     exit 1
 fi
 
@@ -71,7 +71,7 @@ run_test "Module stealth (hide/unhide)"
 OUTPUT=$($CLI hide-module 2>&1) && true
 if assert_contains "hidden" "$OUTPUT"; then
     # Verify it's hidden from lsmod
-    if ! lsmod | grep -q rooteame; then
+    if ! lsmod | grep -q vault_kernel; then
         test_pass
     else
         echo "  WARNING: module still visible in lsmod (some kernels block list_del)"
@@ -89,15 +89,15 @@ if assert_contains "visible" "$OUTPUT"; then test_pass; else test_fail; fi
 # ================================================================
 run_test "File hiding"
 
-TESTFILE="/tmp/rooteame_test_$$"
+TESTFILE="/tmp/vault_kernel_test_$$"
 touch "$TESTFILE"
 echo "test data" > "$TESTFILE"
 
-OUTPUT=$($CLI hide-file "rooteame_test_$$" 2>&1) && true
+OUTPUT=$($CLI hide-file "vault_kernel_test_$$" 2>&1) && true
 assert_contains "Hiding" "$OUTPUT" && test_pass || test_fail
 
 # Verify file is hidden from ls
-OUTPUT=$(ls /tmp/ | grep "rooteame_test_$$" || true)
+OUTPUT=$(ls /tmp/ | grep "vault_kernel_test_$$" || true)
 if [ -z "$OUTPUT" ]; then
     test_pass
 else
@@ -112,7 +112,7 @@ else
 fi
 
 # Unhide
-OUTPUT=$($CLI unhide-file "rooteame_test_$$" 2>&1) && true
+OUTPUT=$($CLI unhide-file "vault_kernel_test_$$" 2>&1) && true
 assert_contains "Revealed" "$OUTPUT" && test_pass || test_fail
 
 # Verify file is visible again

