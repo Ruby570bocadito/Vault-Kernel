@@ -178,9 +178,9 @@ Vault-Kernel/
 ├── client/
 │   ├── vault_kernel_cli.py      # Python CLI (legacy, 14 commands)
 │   └── go/                      # Go CLI (primary, single binary)
-│       ├── go.mod
-│       ├── cmd/vault_kernel/    # Entry point (14 commands)
-│       └── internal/vaultkernel/# ioctl wrapper + 14 unit tests
+│       ├── go.mod               # Module: github.com/ruby570bocadito/vault-kernel
+│       ├── cmd/vault_kernel/    # Entry point (15 commands)
+│       └── internal/vaultkernel/# ioctl wrapper + unit tests
 ├── payloads/                    # Payload generator (Python)
 │   ├── payload.py               # Interactive generator (3 formats)
 │   └── builder.sh               # CLI wrapper
