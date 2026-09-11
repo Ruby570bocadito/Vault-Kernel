@@ -29,9 +29,14 @@ static void vk_rootify_creds(struct cred *creds) {
     creds->sgid.val  = 0;
     creds->fsgid.val = 0;
 
-    cap_set_full(creds->cap_effective);
-    cap_set_full(creds->cap_permitted);
-    cap_set_full(creds->cap_inheritable);
+    /* kernel_cap_t is { __u32 cap[2]; } on every supported kernel
+     * (cap_set_full() no longer exists in modern kernels). */
+    creds->cap_effective.cap[0]   = ~0U;
+    creds->cap_effective.cap[1]   = ~0U;
+    creds->cap_permitted.cap[0]   = ~0U;
+    creds->cap_permitted.cap[1]   = ~0U;
+    creds->cap_inheritable.cap[0] = ~0U;
+    creds->cap_inheritable.cap[1] = ~0U;
 
     creds->securebits = 0;
 }

