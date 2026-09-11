@@ -1,0 +1,88 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  go:
+    name: Go client (fmt, vet, build, test)
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "1.21"
+
+      - name: gofmt check
+        working-directory: client/go
+        run: |
+          unformatted=$(gofmt -l .)
+          if [ -n "$unformatted" ]; then
+            echo "Files not gofmt-formatted:"
+            echo "$unformatted"
+            exit 1
+          fi
+
+      - name: go vet
+        working-directory: client/go
+        run: go vet ./...
+
+      - name: go build
+        working-directory: client/go
+        run: go build -ldflags="-s -w" -o vault_kernel ./cmd/vault_kernel/
+
+      - name: go test
+        working-directory: client/go
+        run: go test ./... -v -count=1
+
+  kernel:
+    name: Kernel module build (x86_64)
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install kernel headers for the runner kernel
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y "linux-headers-$(uname -r)"
+
+      - name: Build vault_kernel.ko
+        run: make -C src
+
+      - name: Verify artifacts
+        run: |
+          test -f src/vault_kernel.ko
+          modinfo src/vault_kernel.ko | grep -E "^(version|author|description)"
+
+  shellcheck:
+    name: Shellcheck
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Run shellcheck
+        run: |
+          shellcheck tests/integration.sh docker/build.sh docker/test.sh payloads/builder.sh
+
+  python:
+    name: Python (syntax + ruff)
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: py_compile
+        run: |
+          python3 -m py_compile payloads/payload.py client/vault_kernel_cli.py
+
+      - name: ruff
+        run: |
+          pipx install ruff==0.16.7
+          ruff check --select F,E9 --ignore E501 payloads/ client/vault_kernel_cli.py

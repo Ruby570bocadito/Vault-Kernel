@@ -5,7 +5,9 @@
 # Load:  sudo insmod vault_kernel.ko
 # Unload: sudo rmmod vault_kernel
 
-KERNEL := $(shell uname -r)
+# KERNEL can be overridden for containerized builds, e.g.:
+#   make KERNEL=$(ls /lib/modules | head -1)
+KERNEL ?= $(shell uname -r)
 MODNAME := vault_kernel
 KDIR := /lib/modules/$(KERNEL)/build
 PWD := $(shell pwd)
@@ -32,30 +34,30 @@ ccflags-y := -O2 -Wall \
 all: module
 
 module:
-	$(MAKE) -C $(KDIR) M=$(PWD) modules
+        $(MAKE) -C $(KDIR) M=$(PWD) modules
 
 clean:
-	$(MAKE) -C $(KDIR) M=$(PWD) clean
-	@rm -f *.o *.ko *.mod.c *.mod *.order *.symvers *.mod.o .*.cmd
+        $(MAKE) -C $(KDIR) M=$(PWD) clean
+        @rm -f *.o *.ko *.mod.c *.mod *.order *.symvers *.mod.o .*.cmd
 
 purge: clean
-	@rm -f Module.symvers modules.order
+        @rm -f Module.symvers modules.order
 
 load: module
-	@sudo insmod $(MODNAME).ko && echo "[+] Loaded. Device: /dev/$(MODNAME)"
+        @sudo insmod $(MODNAME).ko && echo "[+] Loaded. Device: /dev/$(MODNAME)"
 
 unload:
-	@sudo rmmod $(MODNAME) && echo "[-] Unloaded."
+        @sudo rmmod $(MODNAME) && echo "[-] Unloaded."
 
 reload: unload load
 
 info:
-	modinfo $(MODNAME).ko 2>/dev/null || echo "Module not built yet. Run 'make' first."
+        modinfo $(MODNAME).ko 2>/dev/null || echo "Module not built yet. Run 'make' first."
 
 dmesg:
-	@sudo dmesg | grep "\[vault_kernel\]" | tail -20
+        @sudo dmesg | grep "\[vault_kernel\]" | tail -20
 
 test:
-	@python3 ../client/vault_kernel_cli.py status
+        @python3 ../client/vault_kernel_cli.py status
 
 .PHONY: all module clean purge load unload reload info dmesg test

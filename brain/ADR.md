@@ -1,8 +1,8 @@
 # vault_kernel — Architecture Decision Record (ADR)
 
 > ruby570bocadito © 2026
-> Versión: 3.0.0
-> Fecha: 2026-05-18
+> Versión: 3.1.0
+> Fecha: 2026-05-18 (v3.0) · 2026-09-11 (v3.1)
 
 ---
 
@@ -158,3 +158,61 @@ CR0 WP bit manipulation (`read_cr0`/`write_cr0`) — estándar en rootkits, más
 6. **Auditar fugas de memoria** → kmalloc/kfree balance
 7. **Probar en 3 kernels distintos** → compatibilidad
 8. **Documentar en /brain/session_*.md** → trazabilidad
+
+
+---
+
+## 9. v3.1 — Corrección del ABI de syscalls (pt_regs)
+
+**Fecha:** 2026-09-11 · **Estado:** Aceptado e implementado
+
+**Contexto.** Desde Linux 4.17 (x86_64), las entradas de `sys_call_table` apuntan a stubs `__x64_sys_*` que reciben un único `struct pt_regs *`; los parámetros reales viven en `regs->di/si/dx/r10/r8/r9`. El módulo v3.0 declaraba los hooks con la ABI antigua de argumentos directos, por lo que en **todos** los kernels anunciados como soportados los hooks leían basura (el puntero pt_regs como `fd`, registros residuales como path...).
+
+**Decisión.**
+- Implementar exclusivamente la ABI `pt_regs`: cada hook extrae sus argumentos de `regs` y llama al original con el mismo `regs` (patrón Diamorphine).
+- El compilador **rechaza** kernels < 4.17 con `#error` en lugar de corromper silenciosamente. `PTREGS_SYSCALL_STUBS` se auto-define si `CONFIG_X86_64` y versión ≥ 4.17.
+
+**Consecuencias.** Compatibilidad real 4.17–6.x en x86_64; el código de la ABI antigua (nunca compilable en kernels modernos) desaparece; los tests de CI compilan el `.ko` real contra los headers del runner.
+
+---
+
+## 10. v3.1 — Escalada de privilegios correcta (self vs PID remoto)
+
+**Fecha:** 2026-09-11 · **Estado:** Aceptado e implementado
+
+**Contexto.** `prepare_creds()`/`commit_creds()` operan sobre `current`: el v3.0 daba root al **caller** del ioctl aunque se pidiera otro PID, y además leía `task->comm` tras `put_pid()` (use-after-free).
+
+**Decisión.** Dos rutas:
+- **self** (pid ≤ 0 o propio): `prepare_creds()` + mutación + `commit_creds()` — el camino canónico del kernel.
+- **remoto**: `get_task_struct()` bajo RCU, mutación **in-place** del `struct cred` del objetivo bajo `task_lock()` (sin swap de punteros → sin credenciales filtradas ni carreras con lectores RCU), lectura de `comm` con la referencia viva, `put_task_struct()`.
+
+**Consecuencias.** `give-root <pid>` funciona de verdad; no hay UAF; los threads del objetivo (que comparten `cred`) se convierten en root de forma consistente.
+
+---
+
+## 11. v3.1 — Backdoor de palabra mágica funcional (señal 35 + FNV-1a)
+
+**Fecha:** 2026-09-11 · **Estado:** Aceptado e implementado
+
+**Contexto.** Tres bugs encadenados: (1) el kernel compara `SIGRTMIN`=32, pero glibc mapea `SIGRTMIN` a 34 → el `kill()` del usuario llega como **35**; el chequeo contra 33 jamás coincidía. (2) La palabra configurada por ioctl nunca se consultaba. (3) El usuario no tenía forma de calcular el PID codificado.
+
+**Decisión.**
+- `MAGIC_SIGNAL = 35` explícito, documentado y sincronizado con las constantes `MagicSignal` del CLI Go y del CLI Python (con test de unidad que fija el valor).
+- El trigger exige `pid & 0xFFFF == fnv1a16(magic_str)` (FNV-1a 32-bit plegado a 16) y `pid >> 16 == puerto`. Implementación idéntica en C, Go y Python, con vectores de test.
+- Nuevo comando `magic-encode <word> <port>` que imprime el `kill -s 35 <pid>` listo para disparar.
+
+**Consecuencias.** El backdoor es disparable y reproducible; cada lenguaje puede generar el trigger sin conocer el resto.
+
+---
+
+## 12. v3.1 — Eliminación del hook write + observabilidad (GET_STATS)
+
+**Fecha:** 2026-09-11 · **Estado:** Aceptado e implementado
+
+**Contexto.** `hooked_write` era passthrough puro: interceptaba **todo** `write()` del sistema para devolver la llamada original — overhead global y superficie de detección sin ninguna función. En paralelo, el módulo no ofrecía forma de inspeccionar su estado en caliente.
+
+**Decisión.**
+- Eliminar el hook de `write` (6 hooks con propósito real).
+- Añadir `IOCTL_GET_STATS (0x0F)`: versión, hooks instalados/planificados, flag de ocultación, contadores de objetos ocultos, bytes del keylogger y uptime. El reporte se construye en **heap** (el `kbuf[4096]` en stack del kernel era riesgo de desbordamiento) y `LIST_HIDDEN` también.
+
+**Consecuencias.** Menos hooks = menos ruido; `vault_kernel stats` da observabilidad en operaciones de laboratorio; cero buffers de 4 KiB en stack.

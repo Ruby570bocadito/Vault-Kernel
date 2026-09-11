@@ -6,7 +6,6 @@
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
-ROOT="$(dirname "$SCRIPT_DIR")"
 
 case "${1:-help}" in
     build)

@@ -14,7 +14,6 @@ int hooking_init(void) {
     hooks[HOOKIDX_OPENAT].hooked     = (unsigned long)hooked_openat;
     hooks[HOOKIDX_READ].hooked       = (unsigned long)hooked_read;
     hooks[HOOKIDX_KILL].hooked       = (unsigned long)hooked_kill;
-    hooks[HOOKIDX_WRITE].hooked      = (unsigned long)hooked_write;
     hooks[HOOKIDX_UNLINKAT].hooked   = (unsigned long)hooked_unlinkat;
 
     for (i = 0; i < hooks_count; i++) {
@@ -41,4 +40,13 @@ void hooking_cleanup(void) {
      */
     synchronize_rcu();
     pr_info(VAULT_KERNEL_TAG " all hooks removed and RCU-synchronized\n");
+}
+
+int hooking_installed_count(void) {
+    int i, n = 0;
+    for (i = 0; i < hooks_count; i++) {
+        if (hooks[i].table_entry && hooks[i].original)
+            n++;
+    }
+    return n;
 }
