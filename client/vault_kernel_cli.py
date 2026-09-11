@@ -28,7 +28,6 @@ import os
 import sys
 import struct
 import fcntl
-import ctypes
 import argparse
 
 MAGIC = 0xC0
@@ -248,7 +247,7 @@ class VaultKernelClient:
     def status(self):
         """Check if rootkit is loaded."""
         if os.path.exists(DEVICE_PATH):
-            print(f"[*] vault_kernel kernel module is LOADED")
+            print("[*] vault_kernel kernel module is LOADED")
             print(f"    Device: {DEVICE_PATH}")
             try:
                 import subprocess
@@ -263,7 +262,7 @@ class VaultKernelClient:
                 pass
         else:
             print("[*] vault_kernel kernel module is NOT loaded")
-            print(f"    Run: sudo insmod vault_kernel.ko")
+            print("    Run: sudo insmod vault_kernel.ko")
 
     def stats(self):
         """Read module statistics via IOCTL_GET_STATS."""

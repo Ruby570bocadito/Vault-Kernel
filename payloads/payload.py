@@ -8,7 +8,7 @@ with anti-VM evasion and persistence.
 ruby570bocadito (c) 2026
 """
 
-import os, sys, socket, struct, subprocess, base64, random, textwrap, shutil
+import os, sys, socket, base64, random
 from pathlib import Path
 from datetime import datetime
 
@@ -459,7 +459,7 @@ def interactive():
         os.chmod(path, 0o755)
         generated.append((f, path))
 
-    print(f"\n  === Generated Payloads ===\n")
+    print("\n  === Generated Payloads ===\n")
     for fmt_name, fpath in generated:
         print(f"  [{fmt_name.upper():6s}] {fpath}  ({os.path.getsize(fpath)/1024:.1f} KB)")
 
