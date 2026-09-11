@@ -54,7 +54,7 @@ flowchart LR
     end
 
     subgraph Device["💾 /dev/vault_kernel"]
-        IOC["ioctl interface<br/>16 commands incl. GET_STATS"]
+        IOC["ioctl interface<br/>17 commands incl. GET_STATS"]
     end
 
     CLI -->|ioctl| Device
@@ -75,7 +75,7 @@ flowchart LR
 
 | Feature | Technique | Stealth |
 |---------|-----------|---------|
-| **Hide Files/Dirs** | Hook `getdents64`/`getdents`/`openat`/`unlinkat` | 🟢 Invisible a `ls`, `find`, `stat` |
+| **Hide Files/Dirs** | Hook `getdents64`/`getdents`/`openat`/`unlinkat`/`statx` | 🟢 Invisible a `ls`, `find`, `stat` |
 | **Hide Processes** | Filtro de PID en `/proc` + protección de señales | 🟢 Invisible a `ps`, `top`, `htop` |
 | **Hide Ports** | Filtrado del `read()` de `/proc/net/tcp*` y `udp*` | 🟢 Invisible a `netstat`, `ss` |
 | **Kernel Keylogger** | Cadena de notificadores de teclado | 🟢 Captura antes que X11/Wayland |
@@ -103,6 +103,9 @@ cd src && make
 
 # 2. Cargar en el kernel (¡SOLO en tu laboratorio!)
 sudo insmod vault_kernel.ko
+
+# 2b. Variante sigilosa: se auto-oculta de lsmod al cargar
+sudo insmod vault_kernel.ko auto_hide=1
 
 # 3. Compilar el cliente Go
 cd ../client/go && go build -ldflags="-s -w" -o vault_kernel ./cmd/vault_kernel/
@@ -132,6 +135,7 @@ vault_kernel keylog              # Leer pulsaciones capturadas
 vault_kernel keylog-clear        # Limpiar buffer del keylogger
 vault_kernel hide-module         # Ocultar de lsmod
 vault_kernel unhide-module       # Revelar en lsmod
+vault_kernel reset               # Limpiar TODAS las listas de ocultación
 vault_kernel version             # Versión del cliente y ABI
 ```
 
@@ -169,13 +173,13 @@ sudo bash tests/integration.sh
 bash docker/build.sh
 ```
 
-**CI** valida en cada push: `gofmt`/`go vet`/`go build`/`go test`, **compilación real del `.ko`** con headers del runner, `shellcheck` de todos los scripts y `py_compile`+`ruff` del código Python. Sin atajos: si está verde, compila.
+**CI** valida en cada push: `gofmt`/`go vet`/`go build`/`go test`, **compilación real del `.ko`** contra los headers del runner **y una matriz Docker contra headers 5.15 y 6.8**, `shellcheck` de todos los scripts y `py_compile`+`ruff` del código Python. Sin atajos: si está verde, compila.
 
 ### 🧠 Compatibilidad de kernel
 
 | Kernel | Estado | Notas |
 |--------|--------|-------|
-| **x86_64 ≥ 4.17** (4.17 – 6.x) | ✅ Soportado | ABI `pt_regs` obligatoria; `class_create()` adaptado (≥6.4) |
+| **x86_64 ≥ 4.17** (4.17 – 6.x) | ✅ Soportado | ABI `pt_regs` obligatoria; `class_create()` adaptado (≥6.4); verificado en CI contra **5.15 y 6.x** |
 | x86_64 < 4.17 | ❌ Rechazado | El módulo **no compila** — las llamadas antiguas pasaban args directos |
 | WSL2 | ❌ No soportado | Sin headers de kernel |
 | ARM64 | 🚧 Planificado | En el roadmap |
@@ -187,14 +191,14 @@ Vault-Kernel/
 ├── src/                         # Módulo kernel (C)
 │   ├── main.c                   # init/exit, búsqueda de syscall table, bypass WP
 │   ├── hooking.c                # instalación/remoción de hooks + RCU sync
-│   ├── file_hide.c              # hooks getdents64/getdents/openat/unlinkat
+│   ├── file_hide.c              # hooks getdents64/getdents/openat/unlinkat/statx
 │   ├── proc_hide.c              # ocultación PID + guardia kill()
 │   ├── net_hide.c               # filtrado read() de /proc/net/*
 │   ├── keylogger.c              # keyboard notifier chain
 │   ├── backdoor.c               # reverse shell + magic packet (hash FNV-1a)
 │   ├── priv_esc.c               # give-root (self + PID remoto)
 │   ├── stealth.c                # ocultación lsmod/sysfs reversible
-│   ├── ioctl.c                  # /dev/vault_kernel (16 ioctls)
+│   ├── ioctl.c                  # /dev/vault_kernel (17 ioctls)
 │   ├── core.h                   # headers + capa compat pt_regs + constantes
 │   └── Makefile
 ├── client/
@@ -207,8 +211,28 @@ Vault-Kernel/
 ├── tests/integration.sh         # Suite de integración (VM)
 ├── docs/images/                 # Banner + demo GIF
 ├── brain/ADR.md                 # Decisiones de arquitectura
-└── .github/workflows/ci.yml     # CI (4 jobs, sin puertas falsas)
+└── .github/workflows/ci.yml     # CI (5 jobs: Go, kernel runner, kernel matrix docker, shellcheck, python)
 ```
+
+### 🔄 Changelog v3.2
+
+**Bugs corregidos** — hallados en la revisión post-v3.1:
+
+| # | Bug | Fix |
+|---|-----|-----|
+| 1 | `filter_dirents()`: un `d_reclen` corrupto (0) causaba **bucle infinito en kernel** | Guard `reclen == 0 \|\| cur + reclen > end → break` |
+| 2 | `hooked_read`: inodos de `/proc/net/*` cacheados al cargar → el filtro **moría** en netns nuevos (contenedores) | Fallback por nombre de dentry en runtime, evaluado **antes** de `fdput()` |
+| 3 | **Gap de detección**: `stat`/`lstat`/`find -stat` veían los ficheros ocultos (solo open/unlink estaban bloqueados) | Nuevo hook `statx` → `-ENOENT` para rutas ocultas |
+| 4 | Ficheros ocultos enumerados vía `statx` con `AT_EMPTY_PATH` | Pathname vacío pasa sin filtrar (no rompe `fstat`) |
+
+**Features nuevas**:
+
+| # | Feature | Detalle |
+|---|---------|---------|
+| 1 | **Hook `statx`** (7º hook) | Ocultación completa de `stat`/`lstat`/`find`; cierra el gap de detección |
+| 2 | **`IOCTL_RESET_ALL` (0x10) + comando `reset`** | Limpia ficheros + PIDs + puertos ocultos de un golpe (Go y Python) — teardown limpio para demo/exit |
+| 3 | **Parámetro `auto_hide`** | `insmod vault_kernel.ko auto_hide=1` se auto-oculta de lsmod/sysfs al cargar |
+| 4 | **Matriz multi-kernel en CI** | Build del `.ko` contra headers **5.15** (ubuntu:22.04) y **6.8** (ubuntu:24.04) en Docker — la compatibilidad anunciada ahora se verifica, no se promete |
 
 ### 🔄 Changelog v3.1
 
@@ -246,15 +270,18 @@ Vault-Kernel is a Linux **LKM rootkit engine** for red team training and authori
 **Highlights**
 
 - **Modern syscall ABI** — hooks use `struct pt_regs` argument extraction; the module refuses to build against pre-4.17 kernels instead of silently corrupting every syscall.
+- **Fully hidden files** — `getdents64`/`getdents`/`openat`/`unlinkat` **and `statx`** are hooked, so `ls`, `find`, `stat` and `lstat` all come up empty; corrupt directory buffers can no longer hang the filter loop.
+- **One-shot teardown** — `vault_kernel reset` clears every hidden file, PID and port through a single ioctl (also available in the Python CLI).
+- **Load-time stealth** — `insmod vault_kernel.ko auto_hide=1` removes the module from `lsmod`/sysfs the moment it loads.
 - **Working magic backdoor** — `kill(pid, 35)` with `(port << 16) | fnv1a16(word)`; identical FNV-1a implementation in C, Go and Python, verified by unit tests.
 - **Real privilege escalation** — self-rooting via `commit_creds()`, arbitrary-PID rooting via in-place `cred` mutation under `task_lock()` (no use-after-free, no leaked credentials).
 - **Live observability** — `vault_kernel stats` reports version, installed hooks, hidden-object counters, keylog buffer and uptime through a dedicated ioctl.
-- **Honest CI** — four jobs (Go toolchain, real `.ko` compilation with runner kernel headers, shellcheck, Python lint); no masked failures.
+- **Honest CI** — five jobs (Go toolchain, real `.ko` compilation with runner kernel headers, a Docker matrix building against 5.15 and 6.8 headers, shellcheck, Python lint); no masked failures.
 
-**Compatibility:** x86_64 kernels ≥ 4.17 (pt_regs syscall ABI), up to 6.x (`class_create()` API adapted). WSL2 and ARM64 are not supported. See the Spanish section above for the full feature table, command reference and v3.1 changelog.
+**Compatibility:** x86_64 kernels ≥ 4.17 (pt_regs syscall ABI), up to 6.x (`class_create()` API adapted). CI verifies the build against 5.15 and 6.8 headers on every push. WSL2 and ARM64 are not supported. See the Spanish section above for the full feature table, command reference and changelogs.
 
 **License:** MIT — see [LICENSE](LICENSE). Built for learning; use it only where you have written permission.
 
 <div align="center">
-  <sub>Built with 🔥 by <a href="https://github.com/Ruby570bocadito">Ruby570bocadito</a> — Vault-Kernel v3.1</sub>
+  <sub>Built with 🔥 by <a href="https://github.com/Ruby570bocadito">Ruby570bocadito</a> — Vault-Kernel v3.2</sub>
 </div>

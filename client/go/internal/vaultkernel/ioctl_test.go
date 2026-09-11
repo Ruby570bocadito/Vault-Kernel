@@ -28,6 +28,7 @@ func TestIOCTLConstants(t *testing.T) {
 		{"MODULE_HIDE", IOCTL_MODULE_HIDE, 0xC00D},
 		{"MODULE_UNHIDE", IOCTL_MODULE_UNHIDE, 0xC00E},
 		{"GET_STATS", IOCTL_GET_STATS, 0x9000C00F},
+		{"RESET_ALL", IOCTL_RESET_ALL, 0xC010},
 	}
 
 	for _, tt := range tests {

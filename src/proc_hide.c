@@ -103,6 +103,14 @@ int proc_hide_init(void) {
 }
 
 void proc_hide_cleanup(void) {
-    hidden_pid_count = 0;
+    proc_hide_reset();
     pr_info(VAULT_KERNEL_TAG " process hiding cleaned\n");
+}
+
+/* Wipe the whole hide-list under the lock (IOCTL_RESET_ALL) */
+void proc_hide_reset(void) {
+    unsigned long flags;
+    spin_lock_irqsave(&proc_hide_lock, flags);
+    hidden_pid_count = 0;
+    spin_unlock_irqrestore(&proc_hide_lock, flags);
 }

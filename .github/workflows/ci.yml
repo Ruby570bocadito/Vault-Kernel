@@ -40,7 +40,7 @@ jobs:
         run: go test ./... -v -count=1
 
   kernel:
-    name: Kernel module build (x86_64)
+    name: Kernel module build (x86_64 runner headers)
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v4
@@ -57,6 +57,35 @@ jobs:
         run: |
           test -f src/vault_kernel.ko
           modinfo src/vault_kernel.ko | grep -E "^(version|author|description)"
+
+  kernel-matrix:
+    name: Kernel module build (docker ${{ matrix.name }})
+    runs-on: ubuntu-24.04
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - base: "ubuntu:22.04"
+            name: "5.15 headers"
+          - base: "ubuntu:24.04"
+            name: "6.8 headers"
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Build .ko against ${{ matrix.base }}
+        run: |
+          docker run --rm -v "$PWD/src:/build/src" ${{ matrix.base }} \
+            bash -exc '
+              export DEBIAN_FRONTEND=noninteractive
+              apt-get update -qq
+              apt-get install -y -qq build-essential linux-headers-generic kmod
+              cd /build/src
+              K=$(ls /lib/modules | head -1)
+              echo "Building against headers: $K"
+              make KERNEL=$K
+              test -f vault_kernel.ko
+              modinfo vault_kernel.ko | grep -E "^(version|author|description)"
+            '
 
   shellcheck:
     name: Shellcheck

