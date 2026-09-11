@@ -29,14 +29,13 @@ static void vk_rootify_creds(struct cred *creds) {
     creds->sgid.val  = 0;
     creds->fsgid.val = 0;
 
-    /* kernel_cap_t is { __u32 cap[2]; } on every supported kernel
-     * (cap_set_full() no longer exists in modern kernels). */
-    creds->cap_effective.cap[0]   = ~0U;
-    creds->cap_effective.cap[1]   = ~0U;
-    creds->cap_permitted.cap[0]   = ~0U;
-    creds->cap_permitted.cap[1]   = ~0U;
-    creds->cap_inheritable.cap[0] = ~0U;
-    creds->cap_inheritable.cap[1] = ~0U;
+    /* Layout-proof full-capabilities: kernel_cap_t has changed shape
+     * across versions ({__u32 cap[2]} pre-6.16, single value later), so
+     * memset the whole field — every representation stores a bitmask
+     * where all-ones means "every capability". */
+    memset(&creds->cap_effective,   0xff, sizeof(creds->cap_effective));
+    memset(&creds->cap_permitted,   0xff, sizeof(creds->cap_permitted));
+    memset(&creds->cap_inheritable, 0xff, sizeof(creds->cap_inheritable));
 
     creds->securebits = 0;
 }
