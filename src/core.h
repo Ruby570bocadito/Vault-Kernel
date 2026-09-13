@@ -43,7 +43,7 @@
 
 /* -- Module metadata -- */
 #define VAULT_KERNEL_NAME    "vault_kernel"
-#define VAULT_KERNEL_VERSION "3.2"
+#define VAULT_KERNEL_VERSION "3.3"
 #define VAULT_KERNEL_AUTHOR  "ruby570bocadito"
 #define VAULT_KERNEL_TAG     "[vault_kernel]"
 
@@ -115,8 +115,15 @@ struct hooked_syscall {
 #include <asm/special_insns.h>
 #include <asm/processor-flags.h>
 
-/* -- Globals -- */
-extern unsigned long *sys_call_table;
+/* -- Globals --
+ *
+ * NOTE: the module's copy of the table pointer is deliberately named
+ * vk_sys_call_table.  Modern headers (>= ~5.18, and all Debian kernels)
+ * pull <asm/syscall.h> into <linux/module.h> via <asm/elf.h>, and that
+ * header already declares `extern const sys_call_ptr_t sys_call_table[]`.
+ * Reusing the kernel's name here is a hard compile error on those
+ * kernels — the v3.2 source did not build on Debian at all. */
+extern unsigned long *vk_sys_call_table;
 extern struct hooked_syscall hooks[];
 extern int hooks_count;
 extern int module_hidden;

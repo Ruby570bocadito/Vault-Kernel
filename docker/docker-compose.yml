@@ -1,5 +1,15 @@
+# vault_kernel — Docker build & lab environment (single compose file)
+#
+#   docker compose build builder          # build the build image
+#   docker compose run --rm builder       # compile vault_kernel.ko -> docker/out/
+#   docker compose up -d victim-1 attacker  # start the lab network
+#
+# NOTE: containers share the host kernel, so an LKM can only be BUILT
+# here, not loaded.  Loading/testing the module needs a real (or libvirt/
+# QEMU) Linux VM — see tests/integration.sh.
 
 services:
+  # Kernel-module builder — picks the newest headers available in the image.
   builder:
     build:
       context: ..
@@ -9,34 +19,73 @@ services:
     volumes:
       - ../src:/build/src
       - ./out:/build/out
-    command: bash -c "make && cp *.ko /build/out/ && echo '[+] Build complete — vault_kernel.ko in docker/out/'"
+    # v3.2 ran `make` in /build, where no Makefile exists — the docker
+    # build path never worked.  cd into /build/src first.
+    command: >
+      bash -c "cd /build/src &&
+               K=$(ls /lib/modules | head -1) &&
+               echo \"Building against headers: $$K\" &&
+               make KERNEL=$$K &&
+               cp vault_kernel.ko /build/out/ &&
+               echo '[+] vault_kernel.ko copied to docker/out/'"
 
-  test-victim:
+  # Victim machine 1 — Ubuntu with typical lab services
+  victim-1:
     image: ubuntu:24.04
     container_name: vault_kernel-victim-1
-    command: sleep infinity
+    command: |
+      bash -c "
+        apt-get update && apt-get install -y openssh-server nginx netcat-openbsd procps net-tools iproute2 &&
+        service ssh start &&
+        service nginx start &&
+        echo '[+] Victim-1 ready (SSH, nginx, netcat)' &&
+        sleep infinity
+      "
     networks:
-      - vault_kernel-net
+      vault_kernel-net:
+        ipv4_address: 172.30.0.10
+    cap_add:
+      - NET_ADMIN
+      - SYS_PTRACE
+    volumes:
+      - ./out:/tmp/rootkit:ro
+
+  # Victim machine 2 — minimal Ubuntu
+  victim-2:
+    image: ubuntu:24.04
+    container_name: vault_kernel-victim-2
+    command: |
+      bash -c "
+        apt-get update && apt-get install -y procps net-tools netcat-openbsd &&
+        echo '[+] Victim-2 ready (minimal)' &&
+        sleep infinity
+      "
+    networks:
+      vault_kernel-net:
+        ipv4_address: 172.30.0.20
     cap_add:
       - NET_ADMIN
     volumes:
-      - ./out:/tmp/rootkit
+      - ./out:/tmp/rootkit:ro
 
-  test-victim-2:
+  # C2 / attacker machine
+  attacker:
     image: ubuntu:24.04
-    container_name: vault_kernel-victim-2
-    command: sleep infinity
+    container_name: vault_kernel-attacker
+    command: |
+      bash -c "
+        apt-get update && apt-get install -y netcat-openbsd procps net-tools iproute2 curl &&
+        echo '[+] Attacker ready' &&
+        sleep infinity
+      "
     networks:
-      - vault_kernel-net
+      vault_kernel-net:
+        ipv4_address: 172.30.0.100
+    cap_add:
+      - NET_ADMIN
     volumes:
-      - ./out:/tmp/rootkit
-
-  test-c2:
-    image: ubuntu:24.04
-    container_name: vault_kernel-c2
-    command: sleep infinity
-    networks:
-      - vault_kernel-net
+      - ../client/go/vault_kernel:/usr/local/bin/vault_kernel:ro
+      - ./out:/tmp/rootkit:ro
 
 networks:
   vault_kernel-net:

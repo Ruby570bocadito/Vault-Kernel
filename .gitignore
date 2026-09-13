@@ -28,3 +28,18 @@ __pycache__/
 
 # Go binaries
 client/go/vault_kernel
+
+# Docker build output
+docker/out/
+
+# Generated payloads (payloads/payload.py output)
+*_stager_*
+payloads/*.sh
+payloads/*.py
+payloads/*.c
+!payloads/payload.py
+!payloads/builder.sh
+
+# Local build/test scratch
+*.log
+.venv/

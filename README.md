@@ -1,17 +1,17 @@
 <div align="center">
-  <img src="docs/images/banner.png" alt="Vault-Kernel" width="820"/>
+  <img src="docs/images/banner.png" alt="Vault-Kernel" width="380"/>
 </div>
 
 <div align="center">
 
 [![CI](https://github.com/Ruby570bocadito/Vault-Kernel/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/Ruby570bocadito/Vault-Kernel/actions/workflows/ci.yml)
+![Version](https://img.shields.io/badge/Version-3.3-8A2BE2?style=flat)
 ![Language](https://img.shields.io/badge/Language-C-CC0000?style=flat&logo=c&logoColor=white)
 ![Client](https://img.shields.io/badge/Client-Go-00ADD8?style=flat&logo=go&logoColor=white)
 ![Platform](https://img.shields.io/badge/Platform-Linux%20x86__64-FF6600?style=flat&logo=linux&logoColor=white)
-![Kernel](https://img.shields.io/badge/Kernel-4.17%20%E2%80%93%206.x%20(pt__regs)-FF4500?style=flat)
 ![License](https://img.shields.io/badge/License-MIT-1155CC?style=flat)
 
-[**Español**](#-espa%C3%B1ol) · [**English**](#-english)
+[**Español**](#-espa%C3%B1ol) · [**English**](#-english) · [**Changelog**](CHANGELOG.md)
 
 </div>
 
@@ -44,7 +44,7 @@ flowchart LR
     end
 
     subgraph Ops["⚙️ Modules"]
-        FH["file_hide<br/>getdents64"]
+        FH["file_hide<br/>getdents64/getdents/<br/>openat/unlinkat/statx"]
         PH["proc_hide<br/>PID filter + kill guard"]
         NH["net_hide<br/>/proc/net/* read filter"]
         KL["keylogger<br/>notifier chain"]
@@ -87,10 +87,14 @@ flowchart LR
 
 ### 🎬 Demo
 
+<details>
+<summary><b>Ver demo del CLI (GIF, ~600 KB)</b></summary>
+<br/>
 <div align="center">
-  <img src="docs/images/demo.gif" alt="Vault-Kernel CLI demo" width="820"/>
-  <p><sub>Sesión simulada — el módulo nunca se carga fuera de un laboratorio autorizado.</sub></p>
+  <img src="docs/images/demo.gif" alt="Vault-Kernel CLI demo" width="480"/>
+  <p><sub>Sesión de laboratorio — el módulo nunca se carga fuera de una VM autorizada.</sub></p>
 </div>
+</details>
 
 ### ⚡ Quick Start
 
@@ -139,7 +143,7 @@ vault_kernel reset               # Limpiar TODAS las listas de ocultación
 vault_kernel version             # Versión del cliente y ABI
 ```
 
-### 🪄 Backdoor de palabra mágica (v3.1)
+### 🪄 Backdoor de palabra mágica
 
 El backdoor combina **palabra + puerto** en un solo `kill()`. El módulo compara el hash **FNV-1a-16** de la palabra; el puerto viaja en los 16 bits altos del PID:
 
@@ -158,30 +162,51 @@ sudo ./vault_kernel magic-encode pwn 4444
 kill -s 35 291290303
 ```
 
-> ℹ️ La señal es **35** = `SIGRTMIN+1` según glibc en x86_64 (el `SIGRTMIN` del kernel es 32 y **no** coincide con el de usuario — bug corregido en v3.1: antes la señal 33 nunca llegaba).
+> ℹ️ La señal es **35** = `SIGRTMIN+1` según glibc en x86_64 (el `SIGRTMIN` del kernel es 32 y **no** coincide con el de usuario — bug corregido en v3.1).
 
 ### 🧪 Testing
+
+Lo que **se verifica automáticamente** (sin root, sin VM):
 
 ```bash
 # Tests unitarios Go (ioctl layout, FNV, serialización)
 cd client/go && go test ./... -v -count=1
 
-# Tests de integración (requiere VM con el módulo cargado)
-sudo bash tests/integration.sh
+# Tests de regresión de payloads (13 checks: sintaxis del dropper,
+# round-trip del tarball, claves XOR hostiles, gcc del C stager…)
+bash tests/test_payloads.sh
 
-# Compilación del .ko en Docker
-bash docker/build.sh
+# Compilación real del .ko (la hace CI contra 5.15 y 6.8; local
+# contra cualquier set de headers instalado)
+make -C src
 ```
 
-**CI** valida en cada push: `gofmt`/`go vet`/`go build`/`go test`, **compilación real del `.ko`** contra los headers del runner **y una matriz Docker contra headers 5.15 y 6.8**, `shellcheck` de todos los scripts y `py_compile`+`ruff` del código Python. Sin atajos: si está verde, compila.
+Lo que **requiere una VM de laboratorio con el módulo cargado**:
+
+```bash
+sudo insmod vault_kernel.ko
+sudo bash tests/integration.sh      # suite de integración end-to-end
+```
+
+Dry-run de un dropper **sin tocar el kernel** (útil para validar el pipeline
+de entrega en CI o en tu estación):
+
+```bash
+INSMOD=/bin/true bash dropper.sh    # ejecuta extract → build → (fake) load
+```
+
+**CI** valida en cada push: `gofmt`/`go vet`/`go build`/`go test`, compilación
+real del `.ko` contra los headers del runner, **matriz Docker contra headers
+5.15 y 6.8**, `shellcheck` de todos los scripts, tests de payloads y
+`py_compile`+`ruff` del código Python. Sin atajos: si está verde, compila.
 
 ### 🧠 Compatibilidad de kernel
 
 | Kernel | Estado | Notas |
 |--------|--------|-------|
-| **x86_64 ≥ 4.17** (4.17 – 6.x) | ✅ Soportado | ABI `pt_regs` obligatoria; `class_create()` adaptado (≥6.4); verificado en CI contra **5.15 y 6.x** |
+| **x86_64 ≥ 4.17** (4.17 – 7.x) | ✅ Soportado | ABI `pt_regs` obligatoria; `class_create()` adaptado (≥6.4). Verificado en CI contra **5.15 / 6.8** y localmente contra **6.1 / 7.1** (Debian) |
 | x86_64 < 4.17 | ❌ Rechazado | El módulo **no compila** — las llamadas antiguas pasaban args directos |
-| WSL2 | ❌ No soportado | Sin headers de kernel |
+| WSL2 | ❌ No soportado | Sin headers de kernel (el `.ko` sí se puede compilar vía Docker) |
 | ARM64 | 🚧 Planificado | En el roadmap |
 
 ### 📦 Estructura
@@ -207,51 +232,28 @@ Vault-Kernel/
 │       ├── cmd/vault_kernel/    # 18 comandos
 │       └── internal/vaultkernel/# wrapper ioctl + tests
 ├── payloads/                    # Generador de payloads (Python)
-├── docker/                      # Build + entorno de prueba multi-nodo
-├── tests/integration.sh         # Suite de integración (VM)
-├── docs/images/                 # Banner + demo GIF
-├── brain/ADR.md                 # Decisiones de arquitectura
-└── .github/workflows/ci.yml     # CI (5 jobs: Go, kernel runner, kernel matrix docker, shellcheck, python)
+├── docker/                      # Build + red de laboratorio (compose único)
+├── tests/
+│   ├── integration.sh           # Suite de integración (VM con módulo cargado)
+│   └── test_payloads.sh         # Regresión de payloads (corre en cualquier sitio)
+├── docs/
+│   ├── ADR.md                   # Decisiones de arquitectura
+│   └── images/                  # Banner + demo GIF
+├── CHANGELOG.md                 # Historial detallado v3.0 → v3.3
+└── .github/workflows/ci.yml     # CI (6 jobs: Go, kernel runner, kernel matrix docker, shellcheck, payloads, python)
 ```
 
-### 🔄 Changelog v3.2
+### 🔄 Novedades v3.3
 
-**Bugs corregidos** — hallados en la revisión post-v3.1:
+Resumen del pase de auditoría — la lista completa de bugs y cambios está en
+[CHANGELOG.md](CHANGELOG.md):
 
-| # | Bug | Fix |
-|---|-----|-----|
-| 1 | `filter_dirents()`: un `d_reclen` corrupto (0) causaba **bucle infinito en kernel** | Guard `reclen == 0 \|\| cur + reclen > end → break` |
-| 2 | `hooked_read`: inodos de `/proc/net/*` cacheados al cargar → el filtro **moría** en netns nuevos (contenedores) | Fallback por nombre de dentry en runtime, evaluado **antes** de `fdput()` |
-| 3 | **Gap de detección**: `stat`/`lstat`/`find -stat` veían los ficheros ocultos (solo open/unlink estaban bloqueados) | Nuevo hook `statx` → `-ENOENT` para rutas ocultas |
-| 4 | Ficheros ocultos enumerados vía `statx` con `AT_EMPTY_PATH` | Pathname vacío pasa sin filtrar (no rompe `fstat`) |
-
-**Features nuevas**:
-
-| # | Feature | Detalle |
-|---|---------|---------|
-| 1 | **Hook `statx`** (7º hook) | Ocultación completa de `stat`/`lstat`/`find`; cierra el gap de detección |
-| 2 | **`IOCTL_RESET_ALL` (0x10) + comando `reset`** | Limpia ficheros + PIDs + puertos ocultos de un golpe (Go y Python) — teardown limpio para demo/exit |
-| 3 | **Parámetro `auto_hide`** | `insmod vault_kernel.ko auto_hide=1` se auto-oculta de lsmod/sysfs al cargar |
-| 4 | **Matriz multi-kernel en CI** | Build del `.ko` contra headers **5.15** (ubuntu:22.04) y **6.8** (ubuntu:24.04) en Docker — la compatibilidad anunciada ahora se verifica, no se promete |
-
-### 🔄 Changelog v3.1
-
-**Arreglos críticos** — todos verificados en esta versión:
-
-| # | Bug | Fix |
-|---|-----|-----|
-| 1 | Hooks con ABI pre-4.17 (args directos) → rotos en **todos** los kernels anunciados | Capa compat `pt_regs` (`regs->di/si/dx`); `< 4.17` no compila (protección explícita) |
-| 2 | `give-root <pid>` daba root al **caller**, no al objetivo + UAF de `task->comm` | Ruta self (`commit_creds`) y ruta remota (mutación in-place bajo `task_lock`); `comm` se lee con referencia viva |
-| 3 | `net_hide` **muerto**: parseaba la IP y comparaba byte-order incorrecto | Parser por campos (local+remote), puertos en host order, línea parcial sin `\n` intacta |
-| 4 | `getdents64`: fuga de **todas** las entradas si el buffer entero estaba oculto | `kept == 0 → return 0` (EOF); absorbido único en el entry anterior |
-| 5 | Señal mágica `SIGRTMIN+1`=33 del kernel ≠ 35 de glibc → el backdoor **nunca** disparaba | `MAGIC_SIGNAL 35` explícito, sincronizado con CLI (constante `MagicSignal`) |
-| 6 | Palabra mágica se guardaba pero **nunca se usaba** | Trigger = `(port<<16) \| fnv1a16(word)`, idéntico en C/Go/Python |
-| 7 | `kbuf[4096]` en stack del kernel + `copy_to_user` bajo spinlock | Buffers en heap; snapshot fuera del lock |
-| 8 | `device_create` sin chequear `ERR_PTR` | `IS_ERR()` + propagación de error |
-| 9 | Hook `write` passthrough puro en **todo** el sistema (overhead) | Eliminado — 6 hooks con propósito |
-| 10 | `((PASS++))` con `set -e` mataba integration.sh + colores `\033` literales | Reescrito: `PASS=$((PASS+1))`, ANSI-C quoting `$'\e[...]'`, shellcheck limpio |
-| 11 | Sin CI (el ADR lo prometía) | `.github/workflows/ci.yml` — 4 jobs honestos, compila el `.ko` real |
-| 12 | Clase `RooteameClient` herencia del rename + unidad systemd inválida (`$(shuf)` literal, `Type=forking`) | Renombrado; `Type=oneshot` + `RemainAfterExit=yes` |
+- **Compila en Debian/modernos**: arreglado el conflicto `sys_call_table` con headers ≥ 5.18 (v3.2 **no compilaba** ahí).
+- **Sin UAF en kernel**: `call_usermodehelper()` ahora usa `UMH_WAIT_EXEC`.
+- **Dropper y C stager funcionan de verdad**: variables separadas, parse de URL correcto, headers HTTP partidos resueltos — verificados byte a byte.
+- **Fast-path en `read()`**: cero overhead cuando no hay puertos ocultos.
+- **Tests de payloads en CI**: 13 regresiones que se ejecutan sin root ni VM.
+- **Repositorio limpio**: `brain/` → `docs/ADR.md`, un solo compose file, changelogs en `CHANGELOG.md`.
 
 ---
 
@@ -270,18 +272,22 @@ Vault-Kernel is a Linux **LKM rootkit engine** for red team training and authori
 **Highlights**
 
 - **Modern syscall ABI** — hooks use `struct pt_regs` argument extraction; the module refuses to build against pre-4.17 kernels instead of silently corrupting every syscall.
-- **Fully hidden files** — `getdents64`/`getdents`/`openat`/`unlinkat` **and `statx`** are hooked, so `ls`, `find`, `stat` and `lstat` all come up empty; corrupt directory buffers can no longer hang the filter loop.
+- **Builds everywhere ≥ 4.17** — v3.3 fixed the `sys_call_table` symbol collision that broke compilation on modern Debian kernels; verified against 6.1 and 7.1 headers in addition to the CI matrix (5.15 / 6.8).
+- **Fully hidden files** — `getdents64`/`getdents`/`openat`/`unlinkat`/`statx` are hooked, so `ls`, `find`, `stat` and `lstat` all come up empty.
+- **Working delivery payloads** — the bash dropper and the C stager were rewritten after v3.2's were found to be non-functional (variable collision, broken URL parsing, corrupted HTTP bodies); every generated artifact is regression-tested by `tests/test_payloads.sh` and the stager download is verified byte-for-byte.
 - **One-shot teardown** — `vault_kernel reset` clears every hidden file, PID and port through a single ioctl (also available in the Python CLI).
 - **Load-time stealth** — `insmod vault_kernel.ko auto_hide=1` removes the module from `lsmod`/sysfs the moment it loads.
 - **Working magic backdoor** — `kill(pid, 35)` with `(port << 16) | fnv1a16(word)`; identical FNV-1a implementation in C, Go and Python, verified by unit tests.
-- **Real privilege escalation** — self-rooting via `commit_creds()`, arbitrary-PID rooting via in-place `cred` mutation under `task_lock()` (no use-after-free, no leaked credentials).
-- **Live observability** — `vault_kernel stats` reports version, installed hooks, hidden-object counters, keylog buffer and uptime through a dedicated ioctl.
-- **Honest CI** — five jobs (Go toolchain, real `.ko` compilation with runner kernel headers, a Docker matrix building against 5.15 and 6.8 headers, shellcheck, Python lint); no masked failures.
+- **Real privilege escalation** — self-rooting via `commit_creds()`, arbitrary-PID rooting via in-place `cred` mutation under `task_lock()`.
+- **Live observability** — `vault_kernel stats` reports version, installed hooks, hidden-object counters, keylog buffer and uptime.
+- **Honest CI** — six jobs (Go toolchain, real `.ko` compilation, Docker matrix against 5.15/6.8 headers, shellcheck, payload regression, Python lint); no masked failures.
 
-**Compatibility:** x86_64 kernels ≥ 4.17 (pt_regs syscall ABI), up to 6.x (`class_create()` API adapted). CI verifies the build against 5.15 and 6.8 headers on every push. WSL2 and ARM64 are not supported. See the Spanish section above for the full feature table, command reference and changelogs.
+**Testing without a VM:** `bash tests/test_payloads.sh` (no root needed) and `INSMOD=/bin/true bash dropper.sh` for a kernel-free dry run. Integration tests need a lab VM with the module loaded: `sudo bash tests/integration.sh`.
+
+**Compatibility:** x86_64 kernels ≥ 4.17, up to 7.x (`class_create()` API adapted). WSL2 and ARM64 are not supported. See the Spanish section above for the full feature table, command reference and compatibility matrix.
 
 **License:** MIT — see [LICENSE](LICENSE). Built for learning; use it only where you have written permission.
 
 <div align="center">
-  <sub>Built with 🔥 by <a href="https://github.com/Ruby570bocadito">Ruby570bocadito</a> — Vault-Kernel v3.2</sub>
+  <sub>Built with 🔥 by <a href="https://github.com/Ruby570bocadito">Ruby570bocadito</a> — Vault-Kernel v3.3</sub>
 </div>

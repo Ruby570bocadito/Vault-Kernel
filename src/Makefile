@@ -37,8 +37,13 @@ module:
 	$(MAKE) -C $(KDIR) M=$(PWD) modules
 
 clean:
-	$(MAKE) -C $(KDIR) M=$(PWD) clean
+	@if [ -d "$(KDIR)" ]; then \
+		$(MAKE) -C $(KDIR) M=$(PWD) clean; \
+	else \
+		echo "[!] No kernel headers at $(KDIR) - removing artifacts manually"; \
+	fi
 	@rm -f *.o *.ko *.mod.c *.mod *.order *.symvers *.mod.o .*.cmd
+	@rm -rf .tmp_versions
 
 purge: clean
 	@rm -f Module.symvers modules.order

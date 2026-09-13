@@ -11,7 +11,7 @@ import (
 	"github.com/ruby570bocadito/vault-kernel/internal/vaultkernel"
 )
 
-const clientVersion = "3.2"
+const clientVersion = "3.3"
 
 const devicePath = "/dev/vault_kernel"
 

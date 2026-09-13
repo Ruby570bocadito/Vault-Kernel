@@ -6,6 +6,12 @@
 
 ---
 
+> **Nota v3.3 (2026-09-13):** revisión de laboratorio del documento original.
+> Se corrigen referencias obsoletas (deps de Go, matriz de CI) y se registran los
+> hallazgos de v3.3: conflicto de `sys_call_table` con headers modernos, UAF en
+> `call_usermodehelper`, y dropper/C stager regenerados con tests
+> (`tests/test_payloads.sh`). Ver `CHANGELOG.md`.
+
 ## 1. Stack Tecnológico
 
 ### Decisión: Kernel Module en C, Userland Client en Go, Build en Make + Docker
@@ -13,11 +19,11 @@
 | Componente | Tecnología | Justificación |
 |-----------|-----------|---------------|
 | **Kernel Module** | **C (GNU99)** | Única opción viable. El kernel Linux solo acepta módulos en C (Rust for Linux es experimental). C es el estándar en todos los rootkits de referencia (Diamorphine, Reptile, Suterusu, KoviD). |
-| **Userland Client** | **Go 1.26** | Single binary sin runtime externo, compilación cruzada nativa, manejo de ioctl vía `golang.org/x/sys/unix`, consistente con el proyecto BTY del autor. Go es el estándar de facto en tooling de red team (Sliver C2, Merlin, Cobalt Strike BOF tooling). |
+| **Userland Client** | **Go 1.21+** | Single binary sin runtime externo, compilación cruzada nativa, manejo de ioctl vía `syscall.Syscall(SYS_IOCTL, ...)` nativo (cero dependencias externas). Go es el estándar de facto en tooling de red team (Sliver C2, Merlin, Cobalt Strike BOF tooling). |
 | **Build System** | **Make + Kbuild** | Make es el build system estándar del kernel. Kbuild maneja dependencias de headers automáticamente. Simple, universal, sin dependencias extra. |
 | **Containerización** | **Docker + Compose** | Entorno de build reproducible con kernel headers exactos. Docker Compose para simular entornos multi-nodo (C2 ↔ víctimas). |
 | **Testing** | **Go testing + Bash + Python** | Unit tests en Go para el cliente. Integration tests en Bash para ioctl. Python para pentesting automatizado. |
-| **CI/CD** | **GitHub Actions** | Build multi-kernel (5.4, 5.10, 5.15, 6.1, 6.6). Tests automatizados en cada PR. |
+| **CI/CD** | **GitHub Actions** | Build multi-kernel real: headers del runner + matriz Docker (5.15, 6.8). Tests automatizados en cada push. |
 
 ### Alternativas evaluadas y descartadas
 

@@ -95,7 +95,16 @@ jobs:
 
       - name: Run shellcheck
         run: |
-          shellcheck tests/integration.sh docker/build.sh docker/test.sh payloads/builder.sh
+          shellcheck tests/integration.sh tests/test_payloads.sh docker/build.sh docker/test.sh payloads/builder.sh
+
+  payloads:
+    name: Payload regression (dropper + stagers)
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Run payload tests (no root, no kernel needed)
+        run: bash tests/test_payloads.sh
 
   python:
     name: Python (syntax + ruff)
