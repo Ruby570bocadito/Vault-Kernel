@@ -296,3 +296,35 @@ Verificado con arnés de flujo multi-tanda.
 **Consecuencias.** Un directorio con ficheros ocultos y visibles mezclados
 muestra exactamente los visibles, sin cortes; el caso "todo el directorio
 oculto" sigue devolviendo EOF (comportamiento intencionado).
+
+## 16. v3.6 — Salida máquina JSON de los CLIs con un único parser compartido
+
+**Fecha:** 2026-09-15 · **Estado:** Aceptado e implementado
+
+**Contexto.** El reporte de `GET_STATS` emite VARIOS pares `clave=valor`
+por línea (`module=vault_kernel version=3.5`) y los CLIs lo parseaban
+por líneas partiéndolo en el primer `=`: cada par después del primero se
+tragaba. Efecto: `stats --json` (v3.5) perdía `version`,
+`hooks_planned`, `hidden_pids` y `hidden_ports`, y el check de versión
+de `doctor` (v3.4) nunca podía dispararse. Reproducido con el código
+real de ambos clientes: 6 claves de 10.
+
+**Decisión.** Un único parser por tokens como fuente de verdad en cada
+cliente — `ParseStatsReport`/`ParseHiddenList` en
+`client/go/internal/vaultkernel` y `parse_stats_report`/
+`parse_hidden_list` en el CLI Python — que divide por espacios en
+blanco y después cada token en su primer `=`. El formato de texto del
+kernel NO cambia (es estable, legible y lo consumen los tests de VM);
+la traducción a JSON (`stats --json`, `list --json`, `doctor --json`)
+es responsabilidad exclusiva de los clientes. Los parsers son código de
+producción y por tanto viven en el repo con tests que corren en CI
+(suite Go + unittest stdlib Python), a diferencia de los arneses de
+verificación, que siguen fuera.
+
+**Consecuencias.** Los tres comandos de lectura emiten JSON estable
+(esquema de `doctor` documentado en el ADR y testado; `list --json`
+renderiza secciones vacías como `[]`); un desajuste futuro de formato
+entre módulo y clientes lo detecta la CI antes de que llegue a la VM.
+El contexto de sección decide en `ParseHiddenList` cómo interpretar
+cada entrada, así que un fichero llamado literalmente `pid: 5` sigue
+siendo un nombre de fichero.

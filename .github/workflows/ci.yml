@@ -107,7 +107,7 @@ jobs:
         run: bash tests/test_payloads.sh
 
   python:
-    name: Python (syntax + ruff)
+    name: Python (syntax, tests, ruff)
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v4
@@ -120,7 +120,10 @@ jobs:
         run: |
           python3 -m py_compile payloads/payload.py client/vault_kernel_cli.py
 
+      - name: unit tests (stdlib unittest)
+        run: python3 tests/python/test_cli_parsing.py -v
+
       - name: ruff
         run: |
           pipx install ruff==0.16.7
-          ruff check --select F,E9 --ignore E501 payloads/ client/vault_kernel_cli.py
+          ruff check --select F,E9 --ignore E501 payloads/ client/vault_kernel_cli.py tests/python/
