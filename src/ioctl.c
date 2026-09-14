@@ -11,6 +11,39 @@ static int dev_major = 0;
 
 #define VK_LIST_BUF_SIZE 4096
 
+/*
+ * Bounded snprintf for the list/stats reports.  The plain pattern
+ *     p += snprintf(p, remaining, ...);
+ * is a heap-overflow trap: snprintf() returns the length it WANTED to
+ * write, so on truncation `p` advances past the end of the allocation
+ * and `remaining` underflows to a huge size_t — every later "remaining
+ * > 64" guard passes and the next call writes out of bounds (v3.3
+ * shipped exactly this bug in IOCTL_LIST_HIDDEN; ~16 hidden files of
+ * 255 chars were enough to corrupt the kernel heap).
+ *
+ * This wrapper clamps truncation to what actually fits, so `p` and
+ * `*remaining` always stay inside the buffer.  Callers keep looping
+ * while `remaining > 64`, which also leaves room for section headers.
+ */
+static size_t vk_snprint(char *p, size_t remaining, const char *fmt, ...)
+{
+    va_list args;
+    int w;
+
+    if (remaining <= 1)
+        return 0;
+
+    va_start(args, fmt);
+    w = vsnprintf(p, remaining, fmt, args);
+    va_end(args);
+
+    if (w < 0)
+        return 0;
+    if ((size_t)w >= remaining)
+        return remaining - 1;   /* truncated: report only what fits */
+    return (size_t)w;
+}
+
 static long vault_kernel_ioctl(struct file *file, unsigned int cmd,
                            unsigned long arg) {
     char kbuf[256];
@@ -66,10 +99,13 @@ static long vault_kernel_ioctl(struct file *file, unsigned int cmd,
 
     case IOCTL_LIST_HIDDEN: {
         /* 4 KiB on the 8/16 KiB kernel stack is a stack-overflow
-         * hazard — build the report in heap memory instead. */
+         * hazard — build the report in heap memory instead, and do
+         * every append through vk_snprint() (truncation-safe; see
+         * the heap-overflow note above it). */
         char *buf;
         char *p;
         size_t remaining;
+        size_t written;
         int i;
 
         buf = kzalloc(VK_LIST_BUF_SIZE, GFP_KERNEL);
@@ -79,30 +115,30 @@ static long vault_kernel_ioctl(struct file *file, unsigned int cmd,
         p = buf;
         remaining = VK_LIST_BUF_SIZE;
 
-        p += snprintf(p, remaining, "--- Hidden PIDs ---\n");
-        remaining = VK_LIST_BUF_SIZE - (size_t)(p - buf);
+        written = vk_snprint(p, remaining, "--- Hidden PIDs ---\n");
+        p += written; remaining -= written;
         for (i = 0; i < hidden_pid_count && remaining > 64; i++) {
-            p += snprintf(p, remaining, "  pid: %d\n", hidden_pids[i]);
-            remaining = VK_LIST_BUF_SIZE - (size_t)(p - buf);
+            written = vk_snprint(p, remaining, "  pid: %d\n", hidden_pids[i]);
+            p += written; remaining -= written;
         }
 
         if (remaining > 64) {
-            p += snprintf(p, remaining, "--- Hidden Files ---\n");
-            remaining = VK_LIST_BUF_SIZE - (size_t)(p - buf);
+            written = vk_snprint(p, remaining, "--- Hidden Files ---\n");
+            p += written; remaining -= written;
         }
         for (i = 0; i < hidden_file_count && remaining > 64; i++) {
-            p += snprintf(p, remaining, "  %s\n", hidden_files[i]);
-            remaining = VK_LIST_BUF_SIZE - (size_t)(p - buf);
+            written = vk_snprint(p, remaining, "  %s\n", hidden_files[i]);
+            p += written; remaining -= written;
         }
 
         if (remaining > 64) {
-            p += snprintf(p, remaining, "--- Hidden Ports ---\n");
-            remaining = VK_LIST_BUF_SIZE - (size_t)(p - buf);
+            written = vk_snprint(p, remaining, "--- Hidden Ports ---\n");
+            p += written; remaining -= written;
         }
         for (i = 0; i < hidden_port_count && remaining > 64; i++) {
-            p += snprintf(p, remaining, "  port: %d\n",
-                          hidden_ports[i]);
-            remaining = VK_LIST_BUF_SIZE - (size_t)(p - buf);
+            written = vk_snprint(p, remaining, "  port: %d\n",
+                                 hidden_ports[i]);
+            p += written; remaining -= written;
         }
 
         if (copy_to_user((char __user *)arg, buf, VK_LIST_BUF_SIZE)) {
@@ -203,6 +239,16 @@ static long vault_kernel_ioctl(struct file *file, unsigned int cmd,
 }
 
 static int vault_kernel_open(struct inode *inode, struct file *file) {
+    /*
+     * Control-plane hardening (v3.4): only CAP_SYS_ADMIN may open the
+     * device.  devtmpfs creates the node 0600 root:root, but a udev
+     * rule, a container bind-mount or a distro quirk could loosen
+     * that — and IOCTL_GIVE_ROOT would then hand root credentials to
+     * ANY local user.  Defense in depth: verify capabilities here,
+     * in the module itself, regardless of the node's mode.
+     */
+    if (!capable(CAP_SYS_ADMIN))
+        return -EPERM;
     return 0;
 }
 

@@ -1,4 +1,4 @@
-.PHONY: all kernel client test test-go test-integration docker-build docker-up docker-down clean
+.PHONY: all kernel client test test-go test-payloads test-integration docker-build docker-up docker-down clean
 
 all: kernel client
 
@@ -15,14 +15,18 @@ client:
 test-go:
 	cd client/go && go test ./... -v -count=1
 
+# Run payload regression tests (no root, no kernel needed)
+test-payloads:
+	bash tests/test_payloads.sh
+
 # Run integration tests (requires VM with loaded kernel module)
 test-integration:
 	@echo "[!] Integration tests require a native Linux VM with the kernel module loaded."
 	@echo "    Run: sudo bash tests/integration.sh"
 
-# All tests (unit + integration placeholder)
-test: test-go
-	@echo "[*] Unit tests passed."
+# All tests (unit + payloads; integration stays VM-only)
+test: test-go test-payloads
+	@echo "[*] Unit and payload tests passed."
 	@echo "[!] For integration tests, run on a VM: sudo bash tests/integration.sh"
 
 # Docker operations

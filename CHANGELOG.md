@@ -6,6 +6,44 @@ Go y el generador de payloads lo replican.
 
 ---
 
+## [3.4] — 2026-09-15
+
+Ronda de mantenimiento del agente único (Director → Implementaciones →
+Pulimiento → Bugs/Seguridad). Dos bugs críticos de kernel corregidos con
+verificación, hardening del canal de control y mejoras de producto para
+lab.
+
+### Corregido — kernel (críticos)
+
+| # | Bug | Fix |
+|---|-----|-----|
+| 1 | `filter_dirents()` (file_hide.c) absorbe la entrada oculta en la entrada previa pero **no suma esos bytes** al largo devuelto, y **nunca elimina** una entrada oculta sin predecesor conservado → salvo que la entrada oculta fuese la última del lote: primera posición = fichero **seguía visible**; cualquier otra = listado **truncado/corrupto** y `ls` parseando memoria obsoleta | Reescrito con desplazamiento real (`memmove`) de las entradas conservadas al frente del buffer; el largo devuelto es ahora exacto. Validado con arnés en espacio de usuario sobre buffers dirent sintéticos: 6/6 casos (primero/medio/último/intercalado/ninguno/dobles) frente a 1/6 del algoritmo viejo |
+| 2 | `IOCTL_LIST_HIDDEN` (ioctl.c) usaba `p += snprintf(...)` — al truncar, `snprintf` devuelve el largo que *quería* escribir: `p` se salía de la asignación y `remaining` underfloweaba a un `size_t` enorme, pasando el guardia `remaining > 64` → **escritura fuera de límites en el heap del kernel** con ~16 ficheros ocultos de 255 chars | Wrapper `vk_snprint()` que trunca con clamp y mantiene `p`/`remaining` siempre dentro del buffer; el reporte se corta de forma segura |
+
+### Corregido — kernel (medios)
+
+| # | Bug | Fix |
+|---|-----|-----|
+| 3 | `hooked_read()` filtraba **cualquier** fichero cuyo dentry se llamase `tcp`/`tcp6`/`udp`/`udp6` (p. ej. `./tcp` del cwd) mientras hubiera puertos ocultos — falso positivo con pérdida de datos para el usuario | `is_proc_net_file()` exige además `s_magic == PROC_SUPER_MAGIC`: solo procfs real se filtra |
+| 4 | Mensaje de error de compilación con referencia de versión obsoleta ("v3.1") | Texto genérico sin versión |
+
+### Seguridad
+
+- **Canal de control con gate de capacidades**: `vault_kernel_open()` exige `CAP_SYS_ADMIN` — hasta ahora el módulo confiaba en el modo del nodo (`0600 root:root` vía devtmpfs); una regla udev, un bind-mount de contenedor o un quirk de distro que aflojara los permisos permitiría a **cualquier usuario local** pedir `IOCTL_GIVE_ROOT`. Ahora el módulo lo comprueba él mismo (`-EPERM`).
+- **Validación de entrada en ambos CLI**: nombres de fichero > 255 bytes, palabra mágica > 15 chars y target de shell > 255 bytes se rechazan con error claro en vez de truncarse en silencio contra los buffers fijos del kernel.
+
+### Añadido
+
+- **Comando `doctor`** (Go y Python, paridad total): diagnóstico de lab en un solo paso — existencia y modo del nodo, apertura RW, respuesta de `GET_STATS`, match de versión cliente/módulo, hooks instalados, estado stealth (`/sys/module`), e interfaces keylog/list. Salida no-cero solo si el módulo es inalcanzable.
+- **`give-root` con verificación**: tras el ioctl, el CLI comprueba `euid=0` (self, el ioctl corre en el propio task) o lee `Uid:` de `/proc/<pid>/status` (remoto) y lo reporta.
+- **`docs/DETECTION.md`**: guía de detección para blue teams — IOC concretos (nodo `/dev/vault_kernel`, logs `[vault_kernel]`, unidad `dbus-system.service`, firma `kill(pid, 35)` con pid imposible), comprobaciones rápidas en vivo, verificación robusta (integridad de syscall table, notifier chains, forense con Volatility/LKRG) y endurecimiento preventivo (`module.sig_enforce`, `kptr_restrict`, reglas auditd).
+- **`make test-payloads`** y `make test` ejecuta Go + payloads de una vez.
+
+### Limpieza
+
+- Código muerto eliminado: `is_file_hidden()` (definida y declarada, sin llamadas), macro `MAX_HOOKS` (sin uso) y declaración sobrante de `is_pid_hidden()` en `core.h` (solo se usa dentro de `proc_hide.c`).
+- README: comando `doctor` documentado, sección "Detección (para blue teams)" nueva, estructura actualizada con `docs/DETECTION.md` y `docs/agentes/`.
+
 ## [3.3] — 2026-09-13
 
 Pase de auditoría y **verificación en laboratorio**: todo lo que anunciaba

