@@ -177,7 +177,7 @@ for HIDDEN in aaa_first.txt bbb_middle.txt zzz_last.txt; do
     fi
 
     # …and the remaining listing must be intact, in order.
-    REMAINING=$(ls "$POS_DIR" 2>/dev/null | tr '\n' ' ')
+    REMAINING=$(find "$POS_DIR" -maxdepth 1 -type f -printf '%f\n' | sort | tr '\n' ' ')
     EXPECTED=""
     for F in aaa_first.txt bbb_middle.txt zzz_last.txt; do
         [ "$F" = "$HIDDEN" ] || EXPECTED="$EXPECTED$F "
@@ -191,7 +191,7 @@ for HIDDEN in aaa_first.txt bbb_middle.txt zzz_last.txt; do
 done
 
 # Everything visible again after the round trip.
-COUNT=$(ls "$POS_DIR" 2>/dev/null | wc -l)
+COUNT=$(find "$POS_DIR" -maxdepth 1 -type f | wc -l)
 [ "$COUNT" -eq 3 ] || { echo "  expected 3 visible files after unhiding, got $COUNT"; pos_fail=1; }
 rm -rf "$POS_DIR"
 
@@ -212,6 +212,7 @@ while [ "$i" -lt 20 ]; do
     i=$((i + 1))
 done
 
+# shellcheck disable=SC2086  # CLI may be multi-word (python3 fallback)
 if timeout 10 $CLI list >/dev/null 2>&1; then
     test_pass
 else
