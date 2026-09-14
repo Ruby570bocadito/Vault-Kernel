@@ -12,6 +12,12 @@
 > `call_usermodehelper`, y dropper/C stager regenerados con tests
 > (`tests/test_payloads.sh`). Ver `CHANGELOG.md`.
 
+> **Nota v3.4/v3.5 (2026-09-15):** rondas de mantenimiento del agente único.
+> Se cierran todos los bugs B01–B07 de la sección 6 (estado real verificado
+> contra el código) y se añaden los ADR 13–15 (filtro dirent con memmove,
+> truncamiento seguro de reportes ioctl, iteración getdents hasta EOF real).
+> Ver `CHANGELOG.md` y `docs/agentes/`.
+
 ## 1. Stack Tecnológico
 
 ### Decisión: Kernel Module en C, Userland Client en Go, Build en Make + Docker
@@ -140,17 +146,23 @@ CR0 WP bit manipulation (`read_cr0`/`write_cr0`) — estándar en rootkits, más
 
 ---
 
-## 6. Bugs Identificados (por corregir)
+## 6. Bugs Identificados — estado de cierre (revisión v3.5, 2026-09-15)
 
-| ID | Severidad | Archivo | Descripción |
-|----|-----------|---------|-------------|
-| B01 | Medium | `ioctl.c:8` vs `core.h:96` | `vault_kernel_class` declarado como `static` y `extern` simultáneamente — conflicto de linkage |
-| B02 | High | `ioctl.c:71-82` | Buffer overflow en LIST_HIDDEN: `snprintf(p, 256, ...)` debe usar `sizeof(kbuf) - (p - kbuf)` |
-| B03 | Medium | `net_hide.c:138-144` | `fdput(f)` no se llama si `f.file` es NULL (aunque `fdput` maneja NULL, falta la llamada) |
-| B04 | Low | `net_hide.c:114` | `kern_path` puede dormir — no debería llamarse desde contexto atómico; init corre en contexto seguro |
-| B05 | Medium | `file_hide.c:55` | `strstr(name, hidden_files[i])` causa falsos positivos — oculta todo archivo cuyo nombre contenga el string oculto |
-| B06 | High | `hooking.c` | Falta `synchronize_rcu()` después de `remove_hook()` — race condition al descargar el módulo |
-| B07 | Medium | `main.c` | `class_create()` firma incompatible con kernels < 6.4 |
+Todos los bugs de esta lista histórica (v3.0) están cerrados; se conserva el
+registro con la evidencia de cierre verificada contra el código actual:
+
+| ID | Severidad | Estado | Evidencia de cierre |
+|----|-----------|--------|---------------------|
+| B01 | Medium | ✅ Cerrado (v3.1) | `vault_kernel_class` es `static` solo en `ioctl.c`; `core.h` no lo declara extern |
+| B02 | High | ✅ Cerrado (v3.4) | Reportes `LIST_HIDDEN` vía `vk_snprint()` con clamp de truncamiento (ADR 14); el bug que v3.0 detectó y el que v3.3 reintrodujo con `p += snprintf` quedan cubiertos |
+| B03 | Medium | ✅ Cerrado (v3.3) | `fdput(f)` se ejecuta incondicionalmente tras evaluar el file con la referencia viva |
+| B04 | Low | ✅ Cerrado (v3.1) | `get_proc_inode()` solo corre en `net_hide_init()` (contexto de proceso, durmible) |
+| B05 | Medium | ✅ Cerrado (v3.1) | El substring match solo aplica cuando el patrón oculto contiene `/` (path-based, intencional y documentado en `should_hide_file`) |
+| B06 | High | ✅ Cerrado (v3.1) | `synchronize_rcu()` presente al final de `hooking_cleanup()` |
+| B07 | Medium | ✅ Cerrado (v3.1) | `class_create()` bajo `LINUX_VERSION_CODE >= KERNEL_VERSION(6,4,0)` en `ioctl_init()` |
+
+Bugs abiertos actuales se rastrean en `docs/agentes/z_bugs/` (sección
+"detectados pero no corregidos" de cada ronda).
 
 ---
 
@@ -222,3 +234,65 @@ CR0 WP bit manipulation (`read_cr0`/`write_cr0`) — estándar en rootkits, más
 - Añadir `IOCTL_GET_STATS (0x0F)`: versión, hooks instalados/planificados, flag de ocultación, contadores de objetos ocultos, bytes del keylogger y uptime. El reporte se construye en **heap** (el `kbuf[4096]` en stack del kernel era riesgo de desbordamiento) y `LIST_HIDDEN` también.
 
 **Consecuencias.** Menos hooks = menos ruido; `vault_kernel stats` da observabilidad en operaciones de laboratorio; cero buffers de 4 KiB en stack.
+
+---
+
+## 13. v3.4 — Filtro dirent con desplazamiento real (memmove), no absorción
+
+**Fecha:** 2026-09-15 · **Estado:** Aceptado e implementado
+
+**Contexto.** El filtro de v3.3 "absorbía" la entrada oculta en la entrada
+conservada previa (creciendo su `d_reclen`) pero no contaba esos bytes en el
+largo devuelto, y no eliminaba la entrada si no había predecesor conservado.
+Salvo que la entrada oculta fuese la última del lote, el listado quedaba
+truncado/corrupto o el fichero oculto seguía visible. Verificado con arnés
+en espacio de usuario: 1/6 casos correctos.
+
+**Decisión.** Las entradas conservadas se desplazan al frente del buffer con
+`memmove` y el largo devuelto es la suma exacta de los registros válidos.
+Los `d_off` desplazados conservan su valor original (misma elección que
+Diamorphine; irrelevante para `readdir()` porque la enumeración la retoma el
+kernel desde `file->f_pos`). Arnés propio: 6/6 casos (primera/media/última/
+intercalada/dobles/ninguna).
+
+**Consecuencias.** La ocultación es correcta en cualquier posición; los
+tests de integración 2b (posiciones) y 2c (lista >4 KiB) protegen la
+regresión en VM.
+
+---
+
+## 14. v3.4 — Truncamiento seguro de reportes ioctl (vk_snprint)
+
+**Fecha:** 2026-09-15 · **Estado:** Aceptado e implementado
+
+**Contexto.** `p += snprintf(p, remaining, …)` con truncamiento hace
+avanzar `p` más allá del buffer y underflowea `remaining` (size_t) →
+escritura OOB en heap del kernel con ~16 ficheros ocultos de 255 chars.
+
+**Decisión.** Wrapper `vk_snprint()` que clamp del truncamiento
+(`w >= remaining → remaining-1`); todo reporte de `LIST_HIDDEN` pasa por él.
+Los arneses de verificación viven fuera del repo (`scripts/`) para no mezclar
+herramienta de auditoría con producto.
+
+**Consecuencias.** El reporte se corta de forma segura; el patrón peligroso
+queda proscrito (recomendación de seguridad para rondas futuras).
+
+---
+
+## 15. v3.5 — getdents itera hasta EOF real cuando una tanda completa está oculta
+
+**Fecha:** 2026-09-15 · **Estado:** Aceptado e implementado
+
+**Contexto.** Al ocultar, si TODA la tanda devuelta por el `getdents`
+original estaba compuesta de entradas ocultas, el hook devolvía 0 (EOF):
+el proceso dejaba de ver ficheros visibles en tandas posteriores del mismo
+directorio (truncamiento silencioso).
+
+**Decisión.** Los hooks `getdents64`/`getdents` iteran: mientras el original
+devuelva tandas y el filtro las deje a cero, se solicita la siguiente tanda
+(`file->f_pos` ya avanzó). Se devuelve 0 solo con EOF real del directorio.
+Verificado con arnés de flujo multi-tanda.
+
+**Consecuencias.** Un directorio con ficheros ocultos y visibles mezclados
+muestra exactamente los visibles, sin cortes; el caso "todo el directorio
+oculto" sigue devolviendo EOF (comportamiento intencionado).

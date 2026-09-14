@@ -259,6 +259,13 @@ static int vault_kernel_release(struct inode *inode, struct file *file) {
 static struct file_operations vault_kernel_fops = {
     .owner          = THIS_MODULE,
     .unlocked_ioctl = vault_kernel_ioctl,
+    /*
+     * v3.5: 32-bit CLIs on a 64-bit kernel previously got -ENOTTY.
+     * Every command passes either no argument (_IO) or a fixed-size
+     * buffer, so the zero-extended compat pointer reaches the same
+     * handler safely — no per-command compat translation needed.
+     */
+    .compat_ioctl   = vault_kernel_ioctl,
     .open           = vault_kernel_open,
     .release        = vault_kernel_release,
 };
