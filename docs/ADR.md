@@ -328,3 +328,49 @@ entre módulo y clientes lo detecta la CI antes de que llegue a la VM.
 El contexto de sección decide en `ParseHiddenList` cómo interpretar
 cada entrada, así que un fichero llamado literalmente `pid: 5` sigue
 siendo un nombre de fichero.
+
+## 17. v3.7 — Salida máquina versionada (campo `schema`) y comando `watch`
+
+**Fecha:** 2026-09-15 · **Estado:** Aceptado e implementado
+
+**Contexto.** Desde v3.6 los tres comandos de lectura (`stats --json`,
+`list --json`, `doctor --json`) emiten JSON estable, pero el documento
+no declara SU propia versión: un script de lab que valide forma no
+puede distinguir "el módulo cambió" de "el cliente cambió de esquema".
+Además la auditoría de la ronda 4 encontró que las rutas de fallo de
+`doctor --json` no eran idénticas entre clientes hermanos: el CLI Go
+declaraba `device_open`/`stats_responds` como `bool` con `omitempty`,
+así que la clave DESAPARECÍA del JSON exactamente cuando la
+comprobación fallaba, mientras el CLI Python la emitía como `false`.
+
+**Decisión.** (1) Envelope versionado: los tres comandos JSON de AMBOS
+clientes añaden el campo entero `"schema"` (valor actual `1`, constante
+compartida `jsonSchemaVersion`/`JSON_SCHEMA_VERSION`); es aditivo y
+compatible, y se incrementará solo cuando un campo cambie de forma o de
+significado. El schema vive en la capa de comando (no en los parsers):
+el kernel no emite schema, es propiedad del formato de salida del
+cliente. (2) Paridad por punteros: en Go, `device_open` y
+`stats_responds` pasan a `*bool` con asignación explícita en éxito y
+fallo (la misma semántica que ya tenían `keylog_responds`/
+`list_responds`): la clave aparece si la comprobación llegó a ejecutar
+y desaparece solo si no llegó a ejecutarse — exactamente el contrato
+testado del cliente Python. (3) Comando `watch`: vista en vivo de stats
++ listado con refresco configurable (`--interval MS`, default 1000,
+suelo 50, como `keylog --follow`); el render es una función PURA
+(`RenderWatchPanel` en el paquete interno Go, `format_watch_panel` a
+nivel de módulo en Python) testeada en CI, y el bucle solo posee el
+clear ANSI, la cadencia y la restauración del cursor. Sin dependencias
+externas (sin tview/ncurses), coherente con la política cero-deps.
+(4) Los argumentos de intervalo se parsean con un validador dedicado
+(`_ms_arg` en Python): enteros de texto, sin negativos; los no finitos
+(`nan`/`inf`) que v3.6 dejaba llegar a `time.sleep()` se rechazan ahora
+con error de uso claro.
+
+**Consecuencias.** Un consumidor de lab puede fijar `jq -e '.schema ==
+1'` y detectar cualquier cambio futuro de forma en vez de fallar en
+silencio; los dos clientes emiten el MISMO documento `doctor --json` en
+los tres caminos (éxito, fallo de comprobación, fallo de dispositivo),
+verificado por tests en ambos lados; `watch` reutiliza los parsers
+compartidos de v3.6 sin tocar el módulo, y su panel es un contrato
+fijado por tests espejo (Go y Python) para que las paridades futuras no
+se rompan en silencio.

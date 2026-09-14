@@ -5,7 +5,7 @@
 <div align="center">
 
 [![CI](https://github.com/Ruby570bocadito/Vault-Kernel/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/Ruby570bocadito/Vault-Kernel/actions/workflows/ci.yml)
-![Version](https://img.shields.io/badge/Version-3.6-8A2BE2?style=flat)
+![Version](https://img.shields.io/badge/Version-3.7-8A2BE2?style=flat)
 ![Language](https://img.shields.io/badge/Language-C-CC0000?style=flat&logo=c&logoColor=white)
 ![Client](https://img.shields.io/badge/Client-Go-00ADD8?style=flat&logo=go&logoColor=white)
 ![Platform](https://img.shields.io/badge/Platform-Linux%20x86__64-FF6600?style=flat&logo=linux&logoColor=white)
@@ -127,6 +127,7 @@ vault_kernel doctor              # Diagnóstico completo del lab (dispositivo, A
 vault_kernel doctor --json       # El mismo diagnóstico en JSON para scripts/jq
 vault_kernel stats               # Estadísticas en vivo (hooks, contadores, uptime)
 vault_kernel stats --json        # Las mismas estadísticas en JSON para scripting
+vault_kernel watch               # Vista en vivo de stats + ocultos (refresco 1 s, Ctrl-C para salir)
 vault_kernel give-root [pid]     # Root instantáneo (por defecto: self)
 vault_kernel hide-file <name>    # Ocultar fichero/directorio
 vault_kernel unhide-file <name>  # Revelar fichero/directorio
@@ -261,20 +262,20 @@ Vault-Kernel/
 │   ├── DETECTION.md             # Guía de detección para blue teams
 │   ├── agentes/                 # Informes de ronda del equipo de agentes IA
 │   └── images/                  # Banner + demo GIF
-├── CHANGELOG.md                 # Historial detallado v3.0 → v3.6
+├── CHANGELOG.md                 # Historial detallado v3.0 → v3.7
 └── .github/workflows/ci.yml     # CI (7 jobs: Go, kernel runner, kernel matrix docker 5.15/6.8, shellcheck, payloads, python+tests)
 ```
 
-### 🔄 Novedades v3.6
+### 🔄 Novedades v3.7
 
 Resumen de la ronda de mantenimiento — la lista completa está en
 [CHANGELOG.md](CHANGELOG.md):
 
-- **`stats --json` corregido**: el parser perdía 4 de las 10 claves del reporte (`version`, `hooks_planned`, `hidden_pids`, `hidden_ports`) porque el módulo emite varios pares `clave=valor` por línea. Ahora los dos CLIs comparten un parser por tokens con tests en CI (16 unittest Python + suite Go).
-- **`doctor` restaura su check de versión**: el aviso de desajuste cliente/módulo nunca podía dispararse por el mismo parser roto; la línea de hooks ya no se imprime mangleada.
-- **`keylog --follow --interval` en milisegundos reales**: el CLI Python dormía segundos (1000x más lento que el Go y que la documentación). Paridad Go/Python con suelo de 50 ms.
-- **Nuevos comandos `list --json` y `doctor --json`** (Go y Python): toda la superficie de lectura del CLI es consumible por scripts/jq con esquemas estables.
-- **La CI de Python ejecuta tests de verdad**: hasta v3.5 solo compilaba y linteaba; ahora corre la suite unittest stdlib en cada push.
+- **Nuevo comando `watch`** (Go y Python): vista en vivo de stats + listado de ocultos con refresco configurable (`--interval MS`, por defecto 1000 ms, mínimo 50), render puro testeado en ambos clientes y restauración de consola al salir con Ctrl-C.
+- **Esquemas JSON versionados**: `stats --json`, `list --json` y `doctor --json` añaden el campo `"schema": 1` — los scripts de lab pueden detectar cambios de formato en vez de fallar en silencio (ADR 17).
+- **`doctor --json` con paridad total Go/Python**: en las rutas de fallo, el CLI Go omitía las claves `device_open`/`stats_responds` (efecto de `omitempty` sobre bool) mientras Python las emitía como `false`; ahora ambos emiten el mismo documento en todos los caminos.
+- **Validación de entrada más dura en `--interval`**: el CLI Python aceptaba `--interval nan`/`inf` y moría en `time.sleep()` con traceback; ahora los argumentos no enteros, no finitos y negativos se rechazan con un error de uso claro.
+- **CI 7/7 verde** y la suite de tests llega a 24 unittest Python + 20 tests Go sin una sola dependencia externa.
 
 ---
 
@@ -301,7 +302,7 @@ Vault-Kernel is a Linux **LKM rootkit engine** for red team training and authori
 - **Working magic backdoor** — `kill(pid, 35)` with `(port << 16) | fnv1a16(word)`; identical FNV-1a implementation in C, Go and Python, verified by unit tests.
 - **Real privilege escalation** — self-rooting via `commit_creds()`, arbitrary-PID rooting via in-place `cred` mutation under `task_lock()`.
 - **Live observability** — `vault_kernel stats` reports version, installed hooks, hidden-object counters, keylog buffer and uptime.
-- **Honest CI** — six jobs (Go toolchain, real `.ko` compilation, Docker matrix against 5.15/6.8 headers, shellcheck, payload regression, Python lint); no masked failures.
+- **Honest CI** — seven jobs (Go toolchain, real `.ko` compilation on the runner, Docker matrix against 5.15/6.8 headers, shellcheck, payload regression, Python with unit tests); no masked failures.
 
 **Testing without a VM:** `bash tests/test_payloads.sh` (no root needed) and `INSMOD=/bin/true bash dropper.sh` for a kernel-free dry run. Integration tests need a lab VM with the module loaded: `sudo bash tests/integration.sh`.
 
@@ -310,5 +311,5 @@ Vault-Kernel is a Linux **LKM rootkit engine** for red team training and authori
 **License:** MIT — see [LICENSE](LICENSE). Built for learning; use it only where you have written permission.
 
 <div align="center">
-  <sub>Built with 🔥 by <a href="https://github.com/Ruby570bocadito">Ruby570bocadito</a> — Vault-Kernel v3.6</sub>
+  <sub>Built with 🔥 by <a href="https://github.com/Ruby570bocadito">Ruby570bocadito</a> — Vault-Kernel v3.7</sub>
 </div>

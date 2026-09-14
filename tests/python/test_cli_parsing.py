@@ -9,6 +9,7 @@ Wired into CI (Python job) since v3.6.  The suite pins the GET_STATS /
 LIST_HIDDEN report formats emitted by src/ioctl.c and the regressions
 fixed in v3.6: the multi-pair stats parser and the --interval units.
 """
+import argparse
 import contextlib
 import importlib.util
 import io
@@ -34,7 +35,7 @@ vk = _load_client()
 # EXACT snprintf block of IOCTL_GET_STATS (src/ioctl.c) for a module
 # with all 7 hooks and one hidden file/pid/port each.
 STATS_REPORT = (
-    "module=vault_kernel version=3.6\n"
+    "module=vault_kernel version=3.7\n"
     "hooks_installed=7 hooks_planned=7\n"
     "module_hidden=0\n"
     "hidden_files=1 hidden_pids=1 hidden_ports=1\n"
@@ -59,7 +60,7 @@ class TestParseStatsReport(unittest.TestCase):
     def test_kernel_fixture(self):
         self.assertEqual(vk.parse_stats_report(STATS_REPORT), {
             "module": "vault_kernel",
-            "version": "3.6",
+            "version": "3.7",
             "hooks_installed": "7",
             "hooks_planned": "7",
             "module_hidden": "0",
@@ -73,9 +74,9 @@ class TestParseStatsReport(unittest.TestCase):
     def test_multiple_pairs_per_line(self):
         """v3.4/v3.5 regression: the line-based parser lost every pair
         after the first on each line."""
-        got = vk.parse_stats_report("module=vault_kernel version=3.6\n")
+        got = vk.parse_stats_report("module=vault_kernel version=3.7\n")
         self.assertEqual(got["module"], "vault_kernel")
-        self.assertEqual(got["version"], "3.6")
+        self.assertEqual(got["version"], "3.7")
 
     def test_empty_report(self):
         self.assertEqual(vk.parse_stats_report(""), {})
@@ -146,8 +147,9 @@ class TestStatsJsonEndToEnd(unittest.TestCase):
         with contextlib.redirect_stdout(out):
             c.stats(as_json=True)
         parsed = json.loads(out.getvalue())
+        self.assertEqual(parsed["schema"], 1)
         self.assertEqual(parsed["module"], "vault_kernel")
-        self.assertEqual(parsed["version"], "3.6")
+        self.assertEqual(parsed["version"], "3.7")
         self.assertEqual(parsed["hooks_installed"], 7)
         self.assertEqual(parsed["hooks_planned"], 7)
         self.assertEqual(parsed["module_hidden"], 0)
@@ -188,10 +190,11 @@ class TestDoctorJsonEndToEnd(unittest.TestCase):
 
     def test_doctor_json_ok(self):
         parsed = self._run_doctor_json()
+        self.assertEqual(parsed["schema"], 1)
         self.assertTrue(parsed["device_present"])
         self.assertTrue(parsed["device_open"])
         self.assertTrue(parsed["stats_responds"])
-        self.assertEqual(parsed["module_version"], "3.6")
+        self.assertEqual(parsed["module_version"], "3.7")
         self.assertTrue(parsed["version_match"])
         self.assertEqual(parsed["uptime_s"], 42)
         self.assertEqual(parsed["hooks_installed"], 7)
@@ -204,7 +207,7 @@ class TestDoctorJsonEndToEnd(unittest.TestCase):
 
     def test_doctor_json_version_mismatch_warns(self):
         parsed = self._run_doctor_json(
-            stats_report=STATS_REPORT.replace("version=3.6", "version=3.0"))
+            stats_report=STATS_REPORT.replace("version=3.7", "version=3.0"))
         self.assertFalse(parsed["version_match"])
         self.assertEqual(parsed["warnings"], 1)
 
@@ -216,9 +219,103 @@ class TestDoctorJsonEndToEnd(unittest.TestCase):
                 vk.run_doctor(as_json=True)
         self.assertEqual(ctx.exception.code, 1)
         parsed = json.loads(out.getvalue())
+        self.assertEqual(parsed["schema"], 1)
         self.assertFalse(parsed["device_present"])
         self.assertNotIn("device_open", parsed)
         self.assertEqual(parsed["warnings"], 0)
+
+
+class TestFormatWatchPanel(unittest.TestCase):
+    """format_watch_panel is the user-facing layout contract of the new
+    `watch` command (v3.7): keys sorted and column-aligned at the widest
+    key, "(none)" for empty hidden sections, "(no stats)" placeholder.
+    Mirrors TestRenderWatchPanel in the Go client."""
+
+    STATS = {
+        "module": "vault_kernel", "version": "3.7",
+        "hooks_installed": "7", "hooks_planned": "7",
+        "module_hidden": "0", "hidden_files": "1", "hidden_pids": "1",
+        "hidden_ports": "1", "keylog_bytes": "0", "uptime_s": "42",
+    }
+    HIDDEN = {"pids": [1234, 567], "files": ["secret.txt",
+                                              "my dir/with space.txt"],
+              "ports": [8080]}
+
+    def test_full_frame(self):
+        got = vk.format_watch_panel(self.STATS, self.HIDDEN, 1000,
+                                    "01:42:10")
+        self.assertIn("vault_kernel watch — refresh 1000 ms — "
+                      "updated 01:42:10 — Ctrl-C to stop", got)
+        self.assertIn("== stats ==", got)
+        self.assertIn("== hidden ==", got)
+        # Keys sorted alphabetically.
+        self.assertLess(got.index("hooks_installed"),
+                        got.index("hooks_planned"))
+        # Column alignment: widest key ("hooks_installed", 15) pads the
+        # rest; the format adds " : " so "version" gets 9 spaces.
+        self.assertIn("version         : 3.7", got)
+        self.assertIn("pids : 1234, 567", got)
+        self.assertIn("files: secret.txt, my dir/with space.txt", got)
+        self.assertIn("ports: 8080", got)
+
+    def test_empty_sections(self):
+        got = vk.format_watch_panel({}, {"pids": [], "files": [],
+                                         "ports": []}, 500, "00:00:00")
+        self.assertIn("stats: (no stats)", got)
+        self.assertIn("pids : (none)", got)
+        self.assertIn("files: (none)", got)
+        self.assertIn("ports: (none)", got)
+
+
+class TestListJsonEndToEnd(unittest.TestCase):
+    """list(as_json=True) against a stubbed ioctl: versioned envelope
+    with the three sections (v3.7 added the schema marker)."""
+
+    def test_list_json_complete(self):
+        c = vk.VaultKernelClient()
+        c._open = lambda: None
+        c._close = lambda: None
+
+        def fake_ioctl(request, buf=None):
+            if buf is not None:
+                data = LIST_REPORT.encode()
+                buf[:len(data)] = data
+            return True
+
+        c._ioctl = fake_ioctl
+        out = io.StringIO()
+        with contextlib.redirect_stdout(out):
+            c.list_hidden(as_json=True)
+        parsed = json.loads(out.getvalue())
+        self.assertEqual(parsed["schema"], 1)
+        self.assertEqual(parsed["pids"], [1234, 567])
+        self.assertEqual(parsed["files"],
+                         ["secret.txt", "my dir/with space.txt"])
+        self.assertEqual(parsed["ports"], [8080])
+
+    def test_list_json_empty_sections(self):
+        c = vk.VaultKernelClient()
+        c._open = lambda: None
+        c._close = lambda: None
+
+        empty_report = ("--- Hidden PIDs ---\n--- Hidden Files ---\n"
+                        "--- Hidden Ports ---\n")
+
+        def fake_ioctl(request, buf=None):
+            if buf is not None:
+                data = empty_report.encode()
+                buf[:len(data)] = data
+            return True
+
+        c._ioctl = fake_ioctl
+        out = io.StringIO()
+        with contextlib.redirect_stdout(out):
+            c.list_hidden(as_json=True)
+        parsed = json.loads(out.getvalue())
+        self.assertEqual(parsed["schema"], 1)
+        self.assertEqual(parsed["pids"], [])
+        self.assertEqual(parsed["files"], [])
+        self.assertEqual(parsed["ports"], [])
 
 
 class TestIntervalUnits(unittest.TestCase):
@@ -235,6 +332,30 @@ class TestIntervalUnits(unittest.TestCase):
 
     def test_default_is_500ms(self):
         self.assertEqual(vk.KEYLOG_DEFAULT_INTERVAL_MS, 500)
+
+
+class TestIntervalArgType(unittest.TestCase):
+    """v3.6 accepted float for --interval, so `--interval nan`/`inf`
+    reached time.sleep() and died with a raw ValueError/OverflowError
+    instead of a usage error.  v3.7 parses interval args with
+    _ms_arg: integer text, no negatives, non-finite rejected by the
+    int() conversion itself."""
+
+    def test_accepts_integer_text(self):
+        self.assertEqual(vk._ms_arg("500"), 500)
+        self.assertEqual(vk._ms_arg("50"), 50)
+
+    def test_rejects_non_integer_text(self):
+        for bad in ("nan", "inf", "abc", "0.5"):
+            with self.assertRaises(argparse.ArgumentTypeError, msg=bad):
+                vk._ms_arg(bad)
+
+    def test_rejects_negative(self):
+        with self.assertRaises(argparse.ArgumentTypeError):
+            vk._ms_arg("-5")
+
+    def test_watch_default_is_1000ms(self):
+        self.assertEqual(vk.WATCH_DEFAULT_INTERVAL_MS, 1000)
 
 
 if __name__ == "__main__":
