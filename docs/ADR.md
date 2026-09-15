@@ -495,3 +495,69 @@ pinados por tests (la clase de bug "silencioso" queda cerrada
 estructuralmente, no caso a caso); y el contrato JSON vive en cuatro
 páginas por comando que crean sin fricción cuando el módulo gane su
 quinto documento.
+
+## 20. v3.10 — `watch --once` con anotación de cambios, parada limpia por señales y el quinto documento JSON (`status --json`)
+
+**Fecha:** 2026-09-15 · **Estado:** Aceptado e implementado
+
+**Contexto.** Cuatro demandas convergen en la ronda 7. (1) El backlog
+de v3.8/v3.9 dejaron escrito el deseo de un `watch` diferencial; un
+operador necesita además SNAPSHOTAR el panel para scripts, CI y
+reportes — hoy el bucle limpia la pantalla con ANSI y no termina nunca,
+imposible de capturar. (2) Los bucles largos solo terminan limpios por
+Ctrl-C: `systemd stop` o `pkill -TERM` matan el CLI a mitad de
+escritura del sink de `keylog --output` (flush por evento mitiga, la
+parada ordenada es la barrera correcta) y el cursor de `watch` puede
+quedar oculto; además la despedida `[*] Follow stopped` existía solo en
+Python (Go salía en silencio — paridad rota). (3) La auditoría de la
+ronda extendió la matriz comando×cliente a los VALORES de flag: Go
+aceptaba `keylog --output --follow` (crearía un fichero llamado
+`--follow`) y `capture --out --json`; argparse los rechaza. Y la
+comprobación "¿está plantado?" es la única superficie de estado sin
+documento JSON, además de la única que puede funcionar sin root. (4)
+Tres errores documentales medidos contra el código (conteos de suite
+intermedios, "seven jobs", epílogo del `--help` Python) y un dead code
+verificado (`case "version"` del dispatcher).
+
+**Decisión.** (1) `watch --once` (AMBOS clientes): un fotograma a
+stdout SIN ANSI, sin bucle, sin manejo de cursor; gramática pura
+extendida con tests espejo. El bucle en vivo gana anotación de cambios:
+`RenderWatchPanelDiff`/`format_watch_panel(prev_stats=...)` marcan
+` (was X)` en los stats que variaron y ` (new)` en las claves nuevas;
+prev nil/None (primer fotograma, `--once`) reproduce el panel clásico
+byte a byte — la función anterior queda como wrapper. SOLO se anota la
+sección de stats: los contadores del módulo (hidden_files/pids/ports)
+ya reflejan las variaciones de las listas; diferenciar las listas
+completas añadiría ruido sin valor de lab. (2) Señales: SIGTERM se
+enruta por el MISMO camino de parada limpia que Ctrl-C en los cuatro
+bucles largos (Go: `signal.Notify(os.Interrupt, syscall.SIGTERM)` y
+`select` en el sleep; Python: handler que lanza KeyboardInterrupt, así
+los finally existentes hacen el trabajo); la despedida
+`\n[*] Follow stopped` se unifica en ambos clientes. El mensaje de
+`watch` no cambia. (3) `status --json` es el QUINTO documento del
+contrato: envelope `schema/device_present/module_in_sysfs` siempre
+presentes y `modinfo` (filename/version/author/description en orden
+contractual) OMITIDO — nunca null — cuando el dispositivo no existe o
+`modinfo` no produce claves del contrato; política best-effort
+documentada en `docs/schemas/status.md` (modinfo lee el FICHERO del
+módulo, no la lista del kernel: un módulo lsmod-oculto puede tener
+sección completa si está instalado en /lib/modules). El parser de
+modinfo es EXACTO por claves (`parse_modinfo`/`parseModinfo`, puros y
+testeados) — el substring-matching que imprimía `srcversion` se
+elimina, y el `status` Go gana las líneas modinfo del texto (paridad
+con Python). El CLI Python recibe además el par `--version`/`-v` (Go lo
+tiene desde v3.6). (4) Regla global de VALORES de flag: los parsers con
+operand (`parseKeylogArgs`/`parseCaptureArgs` — ROL 4 de esta ronda)
+rechazan valores que empiezan por `-` con mensaje que enseña el escape
+`./-foo`; los errores documentales se corrigen (README, epílogo del
+CLI) y el dead code se elimina.
+
+**Consecuencias.** El operador captura el panel con `watch --once >
+frame.txt` para scripts y ve QUÉ cambió en cada refresco del bucle sin
+diff a ojo; los streams de `keylog --output` sobreviven a `systemd
+stop` con el fichero íntegro; los scripts de lab hacen `status --json |
+jq -e '.device_present'` sin root; el contrato JSON crece a cinco
+páginas por comando sin fricción (la convención de la ronda 6 se
+cumple); y los dos clientes documentan y validan la MISMA superficie —
+incluidos los valores de flag, cerrando la última clase de error
+silencioso conocida del dispatcher.

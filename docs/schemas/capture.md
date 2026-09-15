@@ -19,7 +19,7 @@ Python `capture()`/`build_capture_bundle`), pinned by
 {
   "schema": 1,
   "captured_at": "2026-09-15T10:30:05Z",
-  "client_version": "3.9",
+  "client_version": "3.10",
   "module_in_sysfs": false,
   "stats": {
     "hidden_files": 1,
@@ -31,7 +31,7 @@ Python `capture()`/`build_capture_bundle`), pinned by
     "module": "vault_kernel",
     "module_hidden": 0,
     "uptime_s": 42,
-    "version": "3.9"
+    "version": "3.10"
   },
   "hidden": {
     "pids": [1234],

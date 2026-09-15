@@ -90,7 +90,9 @@ check "capture flags" --out
 run_completion vault_kernel stats ""
 check "stats flags" --json
 run_completion vault_kernel watch ""
-check "watch flags" --interval
+check "watch flags" --interval --once
+run_completion vault_kernel status ""
+check "status flags" --json
 
 # 4. File operands fall back to the filesystem: in an empty temp dir with
 # one file, "hide-file <TAB>" must offer it.

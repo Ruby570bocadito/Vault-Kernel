@@ -11,7 +11,7 @@ field changes MEANING or SHAPE. Additive fields keep the value at `1`.
 The version of the producing CLIENT is a separate field
 (`client_version`) and is NOT part of this contract.
 
-## The four documents
+## The five documents
 
 | Document | Command | Contract |
 |----------|---------|----------|
@@ -19,6 +19,11 @@ The version of the producing CLIENT is a separate field
 | Hidden list | `list --json` | [schemas/list.md](schemas/list.md) |
 | Diagnostics | `doctor --json` | [schemas/doctor.md](schemas/doctor.md) |
 | Evidence bundle | `capture` / `capture --out FILE` | [schemas/capture.md](schemas/capture.md) |
+| Module presence | `status --json` | [schemas/status.md](schemas/status.md) |
+
+`status --json` (v3.10) is the only document consumable WITHOUT root —
+the command never opens the device. Its optional `modinfo` section
+follows a documented best-effort policy (see its page).
 
 The `capture` bundle (v3.9) wraps the SAME conversions as `stats
 --json` and `list --json` under one timestamped envelope — when you
@@ -29,11 +34,13 @@ change one of those contracts, check `capture` too.
 - The `schema` field is additive (v3.7): consumers written against the
   pre-schema documents keep working; new consumers should assert it.
 - `stats --json` key order is not contractual (Go marshals a map);
-  `list --json`, `doctor --json` and `capture` key order matches the
-  tables in their per-command pages.
+  `list --json`, `doctor --json`, `capture` and `status --json` key
+  order matches the tables in their per-command pages.
 - The text (non-JSON) output of these commands is NOT covered by this
   contract — it is for humans; parse the JSON variants in scripts.
 
 History: this used to be a single page; it was split per command when
 `capture` became the fourth document (ronda 6, v3.9 — the trigger the
-v3.8 backlog had left conditioned).
+v3.8 backlog had left conditioned). `status --json` joined as the
+fifth document in v3.10 (ronda 7) following the same per-command page
+convention.

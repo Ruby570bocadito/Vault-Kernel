@@ -7,9 +7,10 @@ import (
 )
 
 // RenderWatchPanel builds the full-frame text printed by `watch` on
-// every refresh. It is a PURE function — the CLI owns only the
-// clear-screen/refresh loop — so the layout is unit-testable without a
-// device. Layout (values are the raw report strings, keys sorted):
+// every refresh (no change annotations — see RenderWatchPanelDiff).
+// It is a PURE function — the CLI owns only the clear-screen/refresh
+// loop — so the layout is unit-testable without a device. Layout
+// (values are the raw report strings, keys sorted):
 //
 //	vault_kernel watch — refresh 1000 ms — updated 01:42:10 — Ctrl-C to stop
 //	== stats ==
@@ -24,6 +25,20 @@ import (
 // Empty hidden sections render as "(none)"; a missing stats report
 // renders a "(no stats)" placeholder line instead of an empty frame.
 func RenderWatchPanel(stats map[string]string, hl HiddenList, intervalMs int, refreshedAt string) string {
+	return RenderWatchPanelDiff(stats, nil, hl, intervalMs, refreshedAt)
+}
+
+// RenderWatchPanelDiff is the change-aware form of the watch panel
+// (v3.10): when prev is a NON-nil parsed report from the previous
+// refresh, every stat whose value changed is annotated with
+// " (was <old>)" and every key that did not exist before gets
+// " (new)" — an operator running the live loop sees WHAT moved
+// without diffing frames by eye. prev == nil renders the classic
+// panel unchanged (first frame, --once, and every legacy caller).
+// Only the stats section is annotated: the module's own counters
+// (hidden_files/pids/ports) already reflect changes in the hidden
+// lists (ADR 20).
+func RenderWatchPanelDiff(stats, prev map[string]string, hl HiddenList, intervalMs int, refreshedAt string) string {
 	var b strings.Builder
 	fmt.Fprintf(&b, "vault_kernel watch — refresh %d ms — updated %s — Ctrl-C to stop\n",
 		intervalMs, refreshedAt)
@@ -43,7 +58,17 @@ func RenderWatchPanel(stats map[string]string, hl HiddenList, intervalMs int, re
 		}
 		sort.Strings(keys)
 		for _, k := range keys {
-			fmt.Fprintf(&b, "%-*s : %s\n", width, k, stats[k])
+			suffix := ""
+			if prev != nil {
+				if old, seen := prev[k]; seen {
+					if old != stats[k] {
+						suffix = " (was " + old + ")"
+					}
+				} else {
+					suffix = " (new)"
+				}
+			}
+			fmt.Fprintf(&b, "%-*s : %s%s\n", width, k, stats[k], suffix)
 		}
 	}
 

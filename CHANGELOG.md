@@ -6,6 +6,96 @@ Go y el generador de payloads lo replican.
 
 ---
 
+## [3.10] — 2026-09-15
+
+Ronda 7 del agente único. Prioridad: **modo instantánea y cambios
+visibles en `watch`, terminación limpia por señales y el quinto
+documento JSON (`status --json`)**. La auditoría extendió la matriz
+comando×cliente a los VALORES de los flags (Go aceptaba `--output
+--follow` como ruta) y encontró tres errores documentales medidos
+contra el código. El módulo kernel no se toca (quinta ronda
+consecutiva): estable desde v3.4.
+
+### Añadido
+
+- **`watch --once`** (Go y Python): un fotograma del panel a stdout
+  SIN códigos ANSI, sin bucle y sin manejo de cursor — modo
+  instantánea para scripts, CI y reportes de lab. Gramática pura
+  extendida (`parseWatchArgs` gana `--once`; argparse `--once`) con
+  tests espejo en ambos clientes.
+- **Anotación de cambios en el bucle de `watch`** (Go y Python):
+  `RenderWatchPanelDiff` / `format_watch_panel(prev_stats=...)`
+  marcan los stats que variaron desde el refresco anterior con
+  ` (was X)` y las claves nuevas con ` (new)`; el primer fotograma y
+  `--once` renderizan el panel clásico (prev = nil/None). Solo se
+  anota la sección de stats: los contadores del módulo ya reflejan
+  las variaciones de las listas ocultas (ADR 20). Closes the v3.9
+  backlog item #1 (watch diferencial).
+- **`status --json`** (Go y Python): el QUINTO documento del contrato
+  JSON — `docs/schemas/status.md` nuevo y fila en el índice
+  `docs/SCHEMAS.md`. Envelope `schema/device_present/module_in_sysfs`
+  siempre presentes; `modinfo` (filename/version/author/description,
+  en orden contractual) solo cuando el dispositivo existe y
+  `modinfo vault_kernel` se ejecuta con éxito — best-effort
+  documentado. Funciona sin root: status nunca abre el dispositivo.
+- **`parse_modinfo` / `parseModinfo`** (Python/Go, puros y testeados):
+  parser de claves EXACTAS para la salida de modinfo (primera
+  ocurrencia gana, valores vacíos saltados) en lugar del
+  substring-matching de Python que imprimía también `srcversion`.
+- **modinfo en el `status` Go** (paridad textual con Python: líneas
+  `    version:/author:/description:`) vía `os/exec` (stdlib, cero
+  dependencias externas).
+- **`--version`/`-v` en el CLI Python** (argparse action=version): el
+  binario Go los tiene desde v3.6; misma línea de versión.
+- **6 tests Go nuevos** (`TestParseWatchArgsOnce`, `TestParseModinfo`,
+  `TestBuildStatusReport`, `TestRenderWatchPanelDiff` + extensiones)
+  y **18 unittest Python nuevos** → 38 Go + 60 Python + 12 completions
+  (check nuevo de `status --json` y `watch --once` en
+  `tests/test_completions.sh`).
+
+### Corregido
+
+| # | Bug | Fix |
+|---|-----|-----|
+| 1 | Go aceptaba valores de flag que empiezan por `-`: `keylog --output --follow` creaba un fichero llamado `--follow` y `capture --out --json` escribía en `--json`; argparse los rechaza | Regla global en `parseKeylogArgs`/`parseCaptureArgs` (v3.10, ROL 4): valores con `-` inicial se rechazan con mensaje que sugiere el escape `./-foo` |
+| 2 | `stats --json` Python con reporte vacío imprimía `(no stats returned)` (texto) y salía 0; Go falla con exit 1 | Camino JSON reordenado en `stats()` (ROL 4): reporte vacío en modo JSON → `SystemExit` con el mismo mensaje que Go |
+| 3 | `keylog --follow` Go salía en SILENCIO por Ctrl-C (Python imprimía despedida) y SIGTERM mataba el proceso a mitad de escritura del sink en ambos | SIGTERM enrutado por el camino de parada limpia en los 4 bucles largos + mensaje `\n[*] Follow stopped` unificado (ROL 2) |
+| 4 | `watch` (ambos clientes) no capturaba SIGTERM: el cursor podía quedar oculto | `signal.Notify(SIGTERM)` en Go y handler que lanza KeyboardInterrupt en Python |
+| 5 | README anunciaba la suite con los conteos intermedios de la ronda 6 ("27 tests Go + 38 unittest Python") | Corregido a los reales de v3.9 (34/42); los de v3.10 se publican al cierre (38/60/12) |
+| 6 | README inglés: "seven jobs" (el árbol y la realidad dicen 8; el job de completions no se enumeraba) | Corregido a eight con la enumeración completa |
+| 7 | Epílogo del `--help` Python sin `magic-encode` y sin `--timestamps` en `keylog` (desde v3.6/v3.8) | Docstring del módulo actualizado con la superficie completa |
+| 8 | Dead code: `case "version"` del dispatcher Go era inalcanzable desde la reorganización v3.6 | Eliminado (ROL 3) con nota en el handler pre-dispositivo |
+
+### Documentación
+
+- README: Novedades v3.10, líneas `status --json` / `watch --once` en
+  la lista de comandos, árbol con `docs/schemas/status.md`, badge y
+  pie a 3.10, correcciones de conteos (ver Corregido).
+- `docs/SCHEMAS.md`: índice de los CINCO documentos con la fila de
+  status; `docs/schemas/status.md` nuevo (contrato campo a campo,
+  política best-effort de modinfo, ejemplo exacto).
+- `docs/ADR.md`: ADR 20 (decisiones de `watch --once` + anotaciones,
+  política de señales, quinto documento JSON y regla de valores de
+  flag).
+- CHANGELOG: corrección de los conteos publicados en [3.9] (ver
+  Corregido #5).
+
+### Auditoría de la ronda
+
+- CI 8/8 verde verificado por API en `7722353`; suites replicadas
+  desde cero tras reinstalar la toolchain (go1.21.13, shellcheck
+  v0.10.0): 34 Go + 42 Python + 13 payloads + 11 completions +
+  shellcheck + ruff + gofmt/vet/build + `make -n` — todo verde ANTES
+  de tocar nada.
+- Hallazgo instrumental: `git grep ghp_` auto-coincide con la prosa de
+  los informes desde la ronda 6; el chequeo pasa al patrón anclado
+  `ghp_[A-Za-z0-9]{36}` (0 coincidencias verificadas).
+- Matriz extendida a valores de flag (hallazgo 1 del Director) → fix
+  #1; brechas de paridad en caminos de error y señales (hallazgos 2-3)
+  → fixes #1-#4.
+
+---
+
 ## [3.9] — 2026-09-15
 
 Ronda 6 del agente único. Prioridad: **producto de lab (evidencia y
@@ -52,8 +142,9 @@ módulo kernel no se toca (cuarta ronda consecutiva): estable desde v3.4.
 - **8 tests Go nuevos** (`TestParseKeylogArgsOutput`,
   `TestParseCaptureArgs`, `TestKeylogSink`, `TestBuildCaptureReport`,
   `TestParseWatchArgs`, `TestParseShellTarget`, `TestParsePIDArg`,
-  `TestStrictArgs`) y **8 unittest Python nuevos** → 27 Go + 38 Python
-  + 11 completions.
+  `TestStrictArgs`) y **8 unittest Python nuevos** → 34 Go + 42 Python
+  + 11 completions al cierre de la ronda (corregido en v3.10: esta
+  línea publicó los conteos intermedios previos a los tests de ROL 4).
 
 ### Corregido
 

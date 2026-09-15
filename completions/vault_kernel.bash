@@ -1,4 +1,4 @@
-# vault_kernel — bash completion (v3.9)
+# vault_kernel — bash completion (v3.10)
 #
 # Self-contained: it does NOT require the bash-completion package, only
 # bash's builtin `complete`/`compgen`, so it works in minimal lab shells
@@ -12,8 +12,8 @@
 #   sudo cp completions/vault_kernel.bash /etc/bash_completion.d/vault_kernel
 #
 # Flags per command mirror the CLIs' usage texts:
-#   doctor/list/stats  --json
-#   watch              --interval
+#   doctor/list/stats/status  --json
+#   watch              --interval --once
 #   keylog             --follow --timestamps --interval --output
 #   capture            --out
 #   hide-file/unhide-file fall back to file names (compgen -f).
@@ -26,12 +26,12 @@ _vault_kernel_completions() {
     commands="status doctor give-root hide-file unhide-file hide-pid unhide-pid hide-port unhide-port list stats watch shell magic magic-encode keylog keylog-clear capture hide-module unhide-module reset version help"
 
     case "$prev" in
-        doctor|list|stats)
+        doctor|list|stats|status)
             mapfile -t COMPREPLY < <(compgen -W "--json" -- "$cur")
             return 0
             ;;
         watch)
-            mapfile -t COMPREPLY < <(compgen -W "--interval" -- "$cur")
+            mapfile -t COMPREPLY < <(compgen -W "--interval --once" -- "$cur")
             return 0
             ;;
         keylog)
@@ -47,7 +47,7 @@ _vault_kernel_completions() {
             mapfile -t COMPREPLY < <(compgen -f -- "$cur")
             return 0
             ;;
-        give-root|hide-pid|unhide-pid|hide-port|unhide-port|shell|magic|magic-encode|keylog-clear|reset|hide-module|unhide-module|status|version|help)
+        give-root|hide-pid|unhide-pid|hide-port|unhide-port|shell|magic|magic-encode|keylog-clear|reset|hide-module|unhide-module|version|help)
             # Positional/numeric operands: no flag completion.
             return 0
             ;;
