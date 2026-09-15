@@ -11,7 +11,7 @@ import (
 func TestRenderWatchPanelFull(t *testing.T) {
 	stats := map[string]string{
 		"module":          "vault_kernel",
-		"version":         "3.10",
+		"version":         "3.11",
 		"hooks_installed": "7",
 		"hooks_planned":   "7",
 		"module_hidden":   "0",
@@ -42,7 +42,7 @@ func TestRenderWatchPanelFull(t *testing.T) {
 	// Column alignment: the widest key ("hooks_installed", 15) defines
 	// the pad width, then the format adds " : " — so "version" is
 	// followed by 9 spaces before the colon.
-	if !strings.Contains(got, "version         : 3.10") {
+	if !strings.Contains(got, "version         : 3.11") {
 		t.Errorf("version row missing/misaligned:\n%s", got)
 	}
 	if !strings.Contains(got, "pids : 1234, 567") {
@@ -75,7 +75,7 @@ func TestRenderWatchPanelEmptySections(t *testing.T) {
 func TestRenderWatchPanelDiff(t *testing.T) {
 	prev := map[string]string{
 		"module":          "vault_kernel",
-		"version":         "3.10",
+		"version":         "3.11",
 		"hooks_installed": "7",
 		"hooks_planned":   "7",
 		"module_hidden":   "0",
@@ -87,7 +87,7 @@ func TestRenderWatchPanelDiff(t *testing.T) {
 	}
 	cur := map[string]string{
 		"module":          "vault_kernel",
-		"version":         "3.10",
+		"version":         "3.11",
 		"hooks_installed": "7",
 		"hooks_planned":   "7",
 		"module_hidden":   "0",

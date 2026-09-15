@@ -6,6 +6,89 @@ Go y el generador de payloads lo replican.
 
 ---
 
+## [3.11] — 2026-09-15
+
+Ronda 8 del agente único. Prioridad declarada por el owner: **README
+actualizado con imágenes y GIFs**, además del mantenimiento continuo.
+La auditoría encontró que los activos visuales eran la deuda más
+visible (banner "v3.1", demo.gif SIMULADO y estático desde la era
+v3.1), junto a dos brechas de paridad nuevas (contrato sin-root
+roto por el aviso de root; convención POSIX `--` asimétrica). El
+módulo kernel no se toca (sexta ronda consecutiva): estable desde
+v3.4.
+
+### Añadido
+
+- **`capture --out FILE --stdout`** (Go y Python): escribe el bundle
+  0600 Y imprime el documento JSON en stdout; el resumen de una línea
+  se mueve a STDERR en ese modo, de modo que
+  `capture --out ev.json --stdout | jq` sigue siendo un pipeline
+  JSON limpio. `--stdout` sin `--out` se acepta y es redundante
+  (scripts pueden pasarlo incondicionalmente). Cierra el backlog #1
+  de v3.9. Matriz de entrega extraída a `emitCaptureBundle` (Go,
+  testeado con directorio temporal y captura de streams) y rama
+  espejo en Python; contrato actualizado en
+  `docs/schemas/capture.md`; wiring de completions bash+zsh.
+- **`keylog --follow --stop-after N`** (Go y Python): ventana de
+  captura FINITA — el bucle termina limpio tras el evento N con la
+  MISMA despedida que Ctrl-C/SIGTERM (`[*] Follow stopped`); el
+  banner del stream anuncia `stop after N events`. N >= 1, como
+  mucho una vez, SOLO con `--follow` (mismo criterio que
+  `--timestamps`). Cierra el backlog #5.
+- **Autocompletado zsh** (`completions/vault_kernel.zsh`, nuevo):
+  gemelo de paridad del script bash (misma superficie, mismos flags,
+  cabecera `#compdef`), autónomo (solo builtin `compdef`/
+  `_arguments`). `tests/test_completions.sh` gana una sección de
+  paridad textual que compara comandos y flags de AMBOS ficheros —
+  los dos sistemas de completado ya no pueden separarse en silencio
+  (15 checks en total, antes 12). Cierra el backlog #4.
+- **README visual con salida real** (petición explícita del owner):
+  banner nuevo SIN versión incrustada (el badge es la única fuente
+  de verdad de la versión — el banner "v3.1" envejeció 9 minor
+  versions), diagrama de arquitectura renderizado
+  (`docs/images/architecture.png`, dibujado con la topología REAL de
+  `src/`), **demo.gif regenerado desde la salida REAL del binario
+  v3.11** (`version`, `status`, `status --json`, `magic-encode`,
+  error de gramática — sin una sola línea inventada) y
+  **watch-panel.gif** generado por el renderizador real
+  (`RenderWatchPanelDiff`) con datos de lab de ejemplo, etiquetado
+  como tal. Galería nueva en ambas secciones del README. Cierra el
+  backlog #3 (la parte sin VM; las capturas CON módulo cargado
+  siguen anotadas para una ronda con VM).
+- **4 tests Go nuevos** (`TestEmitCaptureBundle`,
+  `TestParseKeylogArgsStopAfter`, `TestPosixOperandArgs`,
+  `TestDeviceRequired`) y **9 unittest Python nuevos**
+  (`TestCaptureStdoutFlag`, `TestKeylogStopAfter`,
+  `TestRootWarningSurface`) → **43 Go + 73 Python + 15 completions
+  + 13 payloads** al cierre.
+
+### Corregido
+
+| # | Bug | Fix |
+|---|-----|-----|
+| 1 | El aviso de no-root rompía el contrato sin-root de v3.10: el CLI Python imprimía `[!] Warning: not running as root` en STDOUT delante del JSON de `status --json`, de modo que `status --json | jq` MORÍA para no-root — exactamente el flujo que v3.10 creó; Go lo mandaba a stderr pero avisaba también en comandos que nunca abren el dispositivo | El aviso solo se emite para comandos que abren el dispositivo (`deviceRequired` en Go, `_NO_ROOT_REQUIRED` en Python — misma lista: status/version/help/magic-encode quedan fuera) y SIEMPRE por stderr en ambos clientes. Test de regresión con SUBPROCESO real que parsea el stdout y exige stderr vacío |
+| 2 | Gramática POSIX `--` asimétrica: argparse aceptaba `hide-file -- -foo` y Go lo rechazaba (strictArgs contaba el marcador como operand extra), mientras Go aceptaba el `-foo` desnudo que argparse rechaza — el kernel llegaba a recibir nombres con pinta de flag | `posixOperandArgs` (Go): el escape `--` entrega el valor al operando, el `-foo` desnudo se rechaza nombrando el token y enseñando el escape; `-` y los números negativos (`give-root -5`) siguen siendo operandos verbatim como en argparse. Cableado en give-root, hide/unhide-file, hide/unhide-pid, hide/unhide-port, shell, magic y magic-encode; tabla de paridad fijada por `TestPosixOperandArgs` |
+| 3 | demo.gif era una sesión SIMULADA y estática (137 fotogramas idénticos) de la era v3.1, con outputs inventados — contradecía la política de código real del proyecto | Regenerado íntegramente con la salida real del binario v3.11 (los comandos elegidos funcionan sin módulo); el pie del GIF lo declara |
+| 4 | banner.png anunciaba "v3.1" desde la era v3.1 (9 versiones de retraso) | Rediseñado SIN número de versión (el badge del README es la única fuente de verdad); decisión registrada en ADR 21 |
+| 5 | Conteos de suite desactualizados en README/INGLÉS tras crecer la suite | Todos los conteos del README al cierre real de la ronda (43+73+15+13) |
+
+### Documentación
+
+- README reescrito en ambas secciones: galería visual (arquitectura +
+  2 GIFs con pies honestos sobre qué es real y qué es dato de
+  ejemplo), comandos nuevos (`capture --stdout`,
+  `keylog --stop-after`, escape `--`), sección de autocompletado
+  bash+zsh, conteos de suite reales, árbol con `vault_kernel.zsh` y
+  los nuevos assets, badge y pie a 3.11.
+- `docs/schemas/capture.md`: modo `--stdout` documentado (resumen a
+  stderr, pipeline jq limpio, `--stdout` redundante sin `--out`);
+  ejemplos de versión a 3.11 en los cinco contratos.
+- CHANGELOG: entrada `[3.11]` completa; cabecera de completions
+  bash a v3.11.
+- `docs/ADR.md`: ADR 21 (assets visuales: política sin-versión y
+  solo-salida-real; `--stdout`; `--stop-after`; regla POSIX `--`;
+  política del aviso no-root).
+
 ## [3.10] — 2026-09-15
 
 Ronda 7 del agente único. Prioridad: **modo instantánea y cambios

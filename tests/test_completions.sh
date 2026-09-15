@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
-# Functional test for completions/vault_kernel.bash (v3.9).
+# Functional test for completions/vault_kernel.bash (v3.9) and
+# completions/vault_kernel.zsh (v3.11, parity section).
 #
 # The completion script is deliberately self-contained (no
 # bash-completion package helpers), so this test can source it and drive
@@ -117,6 +118,69 @@ run_completion vault_kernel give-root ""
 check "give-root: no completions" ""
 run_completion vault_kernel shell ""
 check "shell: no completions" ""
+
+# ---------------------------------------------------------------------------
+# zsh completion (v3.11): parity with the bash surface.
+#   - `zsh -n` syntax check when zsh is installed (skipped otherwise —
+#     the file stays checked by the parity greps below in every run).
+#   - Command surface and flags are compared TEXTUALLY against the bash
+#     script, so the two files cannot drift apart silently.
+# ---------------------------------------------------------------------------
+ZSH_FILE="$SCRIPT_DIR/../completions/vault_kernel.zsh"
+echo
+echo "== completions/vault_kernel.zsh =="
+
+if [[ -f "$ZSH_FILE" ]]; then
+    PASS=$((PASS + 1)); echo "  ok  - file exists"
+else
+    FAIL=$((FAIL + 1)); echo "  FAIL- file missing: $ZSH_FILE"
+fi
+
+if command -v zsh >/dev/null 2>&1; then
+    if zsh -n "$ZSH_FILE" 2>/dev/null; then
+        PASS=$((PASS + 1)); echo "  ok  - zsh -n (syntax)"
+    else
+        FAIL=$((FAIL + 1)); echo "  FAIL- zsh -n (syntax)"
+    fi
+else
+    echo "  ..  - zsh not installed: syntax check skipped (parity greps still run)"
+fi
+
+# Parity: the zsh file must mention EVERY command of the bash surface.
+missing_cmds=0
+for cmd in status doctor give-root hide-file unhide-file hide-pid \
+           unhide-pid hide-port unhide-port list stats watch shell \
+           magic magic-encode keylog keylog-clear capture hide-module \
+           unhide-module reset version help; do
+    if ! grep -q -- "$cmd" "$ZSH_FILE"; then
+        missing_cmds=1
+        echo "  FAIL- zsh missing command: $cmd"
+    fi
+done
+if [[ $missing_cmds -eq 0 ]]; then
+    PASS=$((PASS + 1)); echo "  ok  - command surface parity (22 commands)"
+else
+    FAIL=$((FAIL + 1))
+fi
+
+# Parity: every documented flag must appear in both files.
+missing_flags=0
+for flag in --json --interval --once --follow --timestamps --output \
+            --stop-after --out --stdout; do
+    if ! grep -q -- "$flag" "$ZSH_FILE"; then
+        missing_flags=1
+        echo "  FAIL- zsh missing flag: $flag"
+    fi
+    if ! grep -q -- "$flag" "$COMPLETIONS"; then
+        missing_flags=1
+        echo "  FAIL- bash missing flag: $flag (added in zsh first?)"
+    fi
+done
+if [[ $missing_flags -eq 0 ]]; then
+    PASS=$((PASS + 1)); echo "  ok  - flag parity (9 flags, both files)"
+else
+    FAIL=$((FAIL + 1))
+fi
 
 echo
 echo "Results: $PASS passed / $FAIL failed"

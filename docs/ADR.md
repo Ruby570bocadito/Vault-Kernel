@@ -561,3 +561,74 @@ páginas por comando sin fricción (la convención de la ronda 6 se
 cumple); y los dos clientes documentan y validan la MISMA superficie —
 incluidos los valores de flag, cerrando la última clase de error
 silencioso conocida del dispatcher.
+
+### ADR 21 — v3.11: activos visuales honestos, `capture --stdout`, `keylog --stop-after`, POSIX `--` y el contrato sin-root
+
+**Fecha:** ronda 8 (2026-09-15). **Estado:** aceptada.
+
+**Contexto.** La petición del owner para esta ronda fue explícita:
+README actualizado con imágenes y GIFs. La auditoría previa (ROL 1)
+encontró que los activos existentes eran la deuda más visible: el
+banner mostraba "v3.1" (nueve versiones de retraso) y `demo.gif` era
+una sesión SIMULADA y estática de esa misma era — 137 fotogramas
+idénticos con salidas inventadas, lo que contradice la política
+anti-simulación del proyecto. En paralelo, dos brechas de paridad
+nuevas: el aviso de no-root rompía el pipeline JSON sin-root que la
+propia v3.10 había creado, y la convención POSIX de fin de opciones
+estaba partida entre clientes.
+
+**Decisión.**
+
+1. **Política de activos visuales** (nueva, permanente): (a) los
+   banners NO llevan número de versión — el badge del README es la
+   única fuente de verdad de la versión, así el arte no puede
+   envejecer; (b) los GIFs del README solo contienen SALIDA REAL —
+   del binario compilado (demo.gif: `version`, `status`,
+   `status --json`, `magic-encode`, error de gramática — comandos que
+   funcionan sin módulo) o del renderizador real del proyecto
+   (watch-panel.gif: `RenderWatchPanelDiff` con datos de lab de
+   ejemplo, etiquetado como tal en el propio GIF); los arneses que
+   vuelcan fotogramas viven FUERA del repo (regla de las rondas
+   1-7); (c) toda pieza visual lleva un pie que declara qué es.
+2. **`capture --out FILE --stdout`**: con ambos flags el bundle se
+   escribe 0600 Y el JSON sale por stdout; el resumen de una línea se
+   mueve a STDERR para no romper `| jq`. `--stdout` sin `--out` se
+   acepta como no-op documentado (los scripts pueden pasarlo
+   incondicionalmente). La matriz de entrega vive en una función
+   pura testeable (`emitCaptureBundle`) — el mismo patrón
+   build/render de rondas previas.
+3. **`keylog --follow --stop-after N`**: N >= 1, una sola vez, solo
+   con `--follow` (el one-shot lee exactamente un buffer — mismo
+   criterio que `--timestamps`). La parada reutiliza la despedida de
+   las señales: un solo camino de salida limpio.
+4. **POSIX `--` en los operandos posicionales de Go**
+   (`posixOperandArgs`): el escape entrega el valor verbatim, el
+   token con `-` inicial desnudo se rechaza nombrándolo y enseñando
+   el escape, y `-`/números negativos siguen siendo operandos — la
+   tabla de paridad se reprodujo celda a celda contra argparse ANTES
+   de codificar y quedó fijada por `TestPosixOperandArgs`.
+   `give-root -5` conserva su contrato (pid <= 0 = self) en ambos
+   clientes.
+5. **El aviso de no-root respeta la lista de comandos sin
+   dispositivo** (`deviceRequired` en Go / `_NO_ROOT_REQUIRED` en
+   Python, misma lista por contrato de paridad): `status`, `version`,
+   `help` y `magic-encode` no avisan; el resto sí. En Python el aviso
+   pasa a STDERR — contaminaba el stdout de `status --json` y mataba
+   `| jq` exactamente en el flujo que v3.10 creó. La regresión se
+   fija con un test de SUBPROCESO que parsea el stdout real y exige
+   stderr vacío.
+6. **Paridad de completados blindada por test**: la sección zsh de
+   `tests/test_completions.sh` compara textualmente comandos y flags
+   de AMBOS ficheros (bash/zsh) — la deriva silenciosa entre los dos
+   sistemas de completado ya no es posible.
+
+**Consecuencias.** El README muestra el proyecto con material visual
+profesional y verificado (arquitectura, demo real, panel real); el
+arte deja de ser una deuda que envejece. Los operadores de scripts
+disponen de captura finita (`--stop-after`) y de bundles con
+stdout limpio (`--stdout`). Los dos clientes aceptan y rechazan la
+MISMA sintaxis en operandos posicionales (última célula de la matriz
+comando×cliente conocida). El flujo sin-root de `status --json | jq`
+funciona en ambos clientes, fijado por test de proceso real. La suite
+crece a 43 Go + 73 Python + 15 completions + 13 payloads, todo
+stdlib y sin dependencias nuevas.

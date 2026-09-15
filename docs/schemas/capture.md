@@ -11,6 +11,11 @@ Python `capture()`/`build_capture_bundle`), pinned by
 - Without `--out FILE` the document goes to stdout (like `--json`).
 - With `--out FILE` the file is written **0600** — bundles may contain
   keystrokes — and a one-line summary goes to stdout instead.
+- With `--out FILE --stdout` (v3.11) the file is written AND the
+  document is printed to stdout; the one-line summary moves to
+  STDERR, so `capture --out ev.json --stdout | jq` stays a clean JSON
+  pipeline. `--stdout` without `--out` is accepted and redundant
+  (lab scripts may pass it unconditionally).
 - `captured_at` is the UTC RFC3339 instant of the SNAPSHOT, taken after
   the three buffers were read (it bounds them from above, it is not a
   per-event time; the keylog buffer carries no timestamps by itself).
@@ -19,7 +24,7 @@ Python `capture()`/`build_capture_bundle`), pinned by
 {
   "schema": 1,
   "captured_at": "2026-09-15T10:30:05Z",
-  "client_version": "3.10",
+  "client_version": "3.11",
   "module_in_sysfs": false,
   "stats": {
     "hidden_files": 1,
@@ -31,7 +36,7 @@ Python `capture()`/`build_capture_bundle`), pinned by
     "module": "vault_kernel",
     "module_hidden": 0,
     "uptime_s": 42,
-    "version": "3.10"
+    "version": "3.11"
   },
   "hidden": {
     "pids": [1234],

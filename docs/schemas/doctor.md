@@ -11,11 +11,11 @@ absent only when the run stopped before reaching it.
 ```json
 {
   "schema": 1,
-  "client_version": "3.10",
+  "client_version": "3.11",
   "device_present": true,
   "device_open": true,
   "stats_responds": true,
-  "module_version": "3.10",
+  "module_version": "3.11",
   "version_match": true,
   "uptime_s": 42,
   "hooks_installed": 7,
@@ -49,7 +49,7 @@ produce, `test_doctor_json_device_missing_fails`):
 ```json
 {
   "schema": 1,
-  "client_version": "3.10",
+  "client_version": "3.11",
   "device_present": false,
   "warnings": 0
 }

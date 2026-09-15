@@ -11,7 +11,7 @@ module with all 7 hooks installed and one hidden file/pid/port each:
 {
   "schema": 1,
   "module": "vault_kernel",
-  "version": "3.10",
+  "version": "3.11",
   "hooks_installed": 7,
   "hooks_planned": 7,
   "module_hidden": 0,

