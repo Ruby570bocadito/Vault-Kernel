@@ -91,7 +91,7 @@ check "capture flags" --out
 run_completion vault_kernel stats ""
 check "stats flags" --json
 run_completion vault_kernel watch ""
-check "watch flags" --interval --once
+check "watch flags" --interval --once --count
 run_completion vault_kernel status ""
 check "status flags" --json
 
@@ -158,14 +158,14 @@ for cmd in status doctor give-root hide-file unhide-file hide-pid \
     fi
 done
 if [[ $missing_cmds -eq 0 ]]; then
-    PASS=$((PASS + 1)); echo "  ok  - command surface parity (22 commands)"
+    PASS=$((PASS + 1)); echo "  ok  - command surface parity (23 commands)"
 else
     FAIL=$((FAIL + 1))
 fi
 
 # Parity: every documented flag must appear in both files.
 missing_flags=0
-for flag in --json --interval --once --follow --timestamps --output \
+for flag in --json --interval --once --count --follow --timestamps --output \
             --stop-after --out --stdout; do
     if ! grep -q -- "$flag" "$ZSH_FILE"; then
         missing_flags=1
@@ -177,7 +177,7 @@ for flag in --json --interval --once --follow --timestamps --output \
     fi
 done
 if [[ $missing_flags -eq 0 ]]; then
-    PASS=$((PASS + 1)); echo "  ok  - flag parity (9 flags, both files)"
+    PASS=$((PASS + 1)); echo "  ok  - flag parity (10 flags, both files)"
 else
     FAIL=$((FAIL + 1))
 fi

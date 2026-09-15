@@ -632,3 +632,83 @@ comando×cliente conocida). El flujo sin-root de `status --json | jq`
 funciona en ambos clientes, fijado por test de proceso real. La suite
 crece a 43 Go + 73 Python + 15 completions + 13 payloads, todo
 stdlib y sin dependencias nuevas.
+
+### ADR 22 — v3.12: contrato de exit codes 0/1/2, gramática antes de dispositivo, `watch --count` y contexto de host en `capture`
+
+**Contexto.** La auditoría de la ronda 9 midió por primera vez los
+CÓDIGOS DE SALIDA de la matriz comando×cliente y los reprodujo
+empíricamente celda a celda contra el binario y el script reales. La
+matriz estaba partida en tres frentes: (1) Go salía con 1 en TODOS
+los errores de gramática mientras argparse — y la convención POSIX de
+las herramientas de script — sale con 2; (2) Go validaba la gramática
+DESPUÉS de `openDevice()` (decisión de la ronda 4), de modo que sin
+módulo cargado el error de dispositivo enmascaraba el error de uso
+(`hide-file a b` sin módulo respondía "cannot open
+/dev/vault_kernel" en vez del operand inesperado); (3) Python era
+inconsistente consigo mismo: `keylog --timestamps` sin `--follow`
+salía con 2 (parser.error) pero `keylog --stop-after 5` sin
+`--follow` salía con 1 (SystemExit con mensaje). La invocación
+desnuda tampoco coincidía (Go 0 / Python 1), y el propio mensaje de
+error de Go recomendaba ejecutar `vault_kernel help`, que Python no
+tenía como subcomando. En paralelo, el bundle de `capture` carecía de
+contexto de host y `watch` no tenía ventana finita.
+
+**Decisión.**
+
+1. **El contrato de salida es de TRES clases, idéntico en ambos
+   clientes y documentado en la usage, el README y aquí:**
+   `0` éxito · `1` error runtime (abrir dispositivo, fallo de ioctl,
+   informe vacío, fichero no escribible) · `2` error de uso
+   (gramática, valores inválidos, precondiciones de flags, comando
+   desconocido, invocación desnuda). La clase 2 sigue la convención
+   de argparse (exit 2 para sus propios errores) y de las herramientas
+   POSIX, y hace que `vault_kernel ... || { }` distinga "lo escribí
+   mal" de "el módulo no responde".
+2. **Gramática ANTES de dispositivo en Go.** Cada case del dispatcher
+   parsea sus argumentos con los parsers puros y devuelve una closure
+   de ejecución; `openDevice()` corre UNA vez tras el switch. Esto
+   CIERRA la deuda de la ronda 4: con módulo cargado el comportamiento
+   es idéntico al de v3.11; sin él, el error de uso honesto (exit 2)
+   sustituye al error de dispositivo que lo ocultaba (exit 1). Los
+   validadores de valor (`validateFileName`, `validateMagicWord`, el
+   check de 255 bytes de `shell`) suben a la fase de gramática, igual
+   que `_reject` en Python, que siempre corrió pre-apertura.
+3. **`usageError` es el tipo de la capa de gramática** (`usagef()` su
+   constructor): `main()` lo mapea con `errors.As` y todo error que
+   llegue plano es runtime por construcción. En Python la misma
+   clase sale por `parser.error`/argparse (2), `_reject` (2, stderr)
+   y los guards pre-apertura (2, stderr); los caminos runtime
+   (`_open`, `_ioctl`, informe vacío, fichero no escribible) salen
+   con 1. Un fallo de ioctl en Python ANTES salía con 0 — `_ioctl`
+   devolvía False y el comando terminaba "con éxito" sin haber hecho
+   nada; ahora lanza `SystemExit(1)`.
+4. **La invocación desnuda es un error de uso** en ambos clientes:
+   usage por stderr + exit 2 (`printUsageTo(w io.Writer)` en Go,
+   `parser.print_help(file=sys.stderr)` en Python). `help` explícito
+   sigue siendo éxito (stdout, 0) y Python lo gana como subcomando
+   para restaurar la paridad de superficie (23 comandos).
+5. **`watch --count N`** (N >= 1, una vez, mutuamente excluyente con
+   `--once` — un fotograma no es una ventana): el bucle renderiza N
+   fotogramas y termina con la MISMA despedida que las señales
+   (`[*] watch stopped`), un solo camino de salida limpio como en
+   `keylog --stop-after`.
+6. **El bundle de `capture` gana `hostname` y `kernel_release`** justo
+   tras `client_version` (DÓNDE se tomó la instantánea): campos
+   ADITIVOS, el envelope del schema permanece en 1 — un consumidor
+   escrito para bundles v3.9 sigue parseando v3.12 sin cambios. Go:
+   `os.Hostname()` + `/proc/sys/kernel/osrelease`; Python:
+   `platform.node()` + `platform.release()`; `""` si la fuente falta.
+
+**Consecuencias.** Los scripts pueden clasificar el fallo con `$?`
+sin parsear texto, en ambos clientes, fijado por una matriz de
+SUBPROCESOS reales (`TestExitCodeContract`) y por
+`TestGrammarErrorsAreUsage` en Go. La gramática ya no depende del
+estado del dispositivo. La superficie de comandos vuelve a ser
+simétrica (23 comandos + formas de versión). La suite crece a 46 Go +
+82 Python + 15 completions + 13 payloads, todo stdlib. Deuda
+conocida: la forma del intervalo posicional de `keylog --follow` en
+Go sigue siendo una asimetría documentada (Python usa `--interval`);
+los caminos de runtime que mezclan escritura y salida (p. ej. fichero
+de `--output` no escribible a mitad de stream) salen 1 en ambos por
+construcción, no por test de proceso.
+

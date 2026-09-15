@@ -1,4 +1,4 @@
-# vault_kernel — bash completion (v3.11)
+# vault_kernel — bash completion (v3.12)
 #
 # Self-contained: it does NOT require the bash-completion package, only
 # bash's builtin `complete`/`compgen`, so it works in minimal lab shells
@@ -13,7 +13,7 @@
 #
 # Flags per command mirror the CLIs' usage texts:
 #   doctor/list/stats/status  --json
-#   watch              --interval --once
+#   watch              --interval --once --count --count
 #   keylog             --follow --timestamps --interval --output --stop-after
 #   capture            --out --stdout
 #   hide-file/unhide-file fall back to file names (compgen -f).
@@ -33,7 +33,7 @@ _vault_kernel_completions() {
             return 0
             ;;
         watch)
-            mapfile -t COMPREPLY < <(compgen -W "--interval --once" -- "$cur")
+            mapfile -t COMPREPLY < <(compgen -W "--interval --once --count" -- "$cur")
             return 0
             ;;
         keylog)

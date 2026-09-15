@@ -24,7 +24,9 @@ Python `capture()`/`build_capture_bundle`), pinned by
 {
   "schema": 1,
   "captured_at": "2026-09-15T10:30:05Z",
-  "client_version": "3.11",
+  "client_version": "3.12",
+  "hostname": "lab-host",
+  "kernel_release": "6.8.0-45-generic",
   "module_in_sysfs": false,
   "stats": {
     "hidden_files": 1,
@@ -36,7 +38,7 @@ Python `capture()`/`build_capture_bundle`), pinned by
     "module": "vault_kernel",
     "module_hidden": 0,
     "uptime_s": 42,
-    "version": "3.11"
+    "version": "3.12"
   },
   "hidden": {
     "pids": [1234],
@@ -52,10 +54,19 @@ Python `capture()`/`build_capture_bundle`), pinned by
 | `schema` | int | Output contract version (this document) |
 | `captured_at` | string | UTC RFC3339 instant of the snapshot |
 | `client_version` | string | Version of the CLI producing the bundle |
+| `hostname` | string | Host the snapshot was taken on (v3.12, additive) |
+| `kernel_release` | string | Running kernel release, `uname -r` equivalent (v3.12, additive) |
 | `module_in_sysfs` | bool | `false` = module hidden from lsmod/sysfs |
 | `stats` | object | The `stats --json` conversion (numbers where numeric, keys sorted) — see [stats.md](stats.md) |
 | `hidden` | object | `{pids, files, ports}`, same shape as `list --json` — see [list.md](list.md) |
 | `keylog` | string | Raw keylog buffer content, verbatim (`""` when empty) |
+
+`hostname` and `kernel_release` (v3.12) are ADDITIVE fields — the
+schema envelope stays at 1 (a consumer written for v3.9 bundles keeps
+parsing v3.12 bundles unchanged).  Go fills them from `os.Hostname()`
+and `/proc/sys/kernel/osrelease`; Python from `platform.node()` and
+`platform.release()`; both fall back to `""` when the source is
+unavailable.
 
 Envelope key order is contractual and identical in both clients (the
 example above is the exact order both emit). `stats` keys are sorted

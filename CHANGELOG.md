@@ -6,6 +6,84 @@ Go y el generador de payloads lo replican.
 
 ---
 
+## [3.12] — 2026-09-15
+
+Ronda 9 del agente único. La auditoría midió por primera vez la
+DIMENSIÓN DE CÓDIGOS DE SALIDA de la matriz comando×cliente y la
+encontró partida en tres frentes (reproducidos empíricamente, celda a
+celda, contra el binario y el script reales): Go salía con 1 en TODOS
+los errores de gramática (argparse sale con 2), Go validaba la
+gramática DESPUÉS de abrir el dispositivo — sin módulo el error de
+dispositivo ENMASCARABA el error de uso — y Python era inconsistente
+consigo mismo (`--timestamps` sin `--follow` salía con 2 vía
+parser.error, `--stop-after` sin `--follow` salía con 1 vía
+SystemExit). Junto a la corrección, dos entregas de producto: el
+bundle de evidencia gana contexto de host y `watch` gana ventanas
+finitas de fotogramas. El módulo kernel no se toca (séptima ronda
+consecutiva): estable desde v3.4.
+
+### Añadido
+
+- **Contrato de códigos de salida 0/1/2** (Go y Python): `0` éxito,
+  `1` error runtime (abrir dispositivo, fallo de ioctl, informe
+  vacío, fichero no escribible), `2` error de uso (gramática, valores
+  inválidos, precondiciones de flags, comando desconocido, invocación
+  desnuda). Paridad con argparse (exit 2 para sus propios errores) y
+  con la convención POSIX de las herramientas de script. Documentado
+  en la usage de ambos clientes, en el README y en ADR 22.
+- **`capture` con contexto de host** (Go y Python): el bundle de
+  evidencia gana `hostname` y `kernel_release` justo tras
+  `client_version` — DÓNDE se tomó la instantánea, la primera
+  pregunta de cualquier revisor de lab. Campos ADITIVOS: el envelope
+  del schema se queda en 1 (un consumidor escrito para bundles v3.9
+  sigue parseando v3.12 sin cambios). Go: `os.Hostname()` +
+  `/proc/sys/kernel/osrelease` (`runningKernelRelease`); Python:
+  `platform.node()` + `platform.release()`; ambos caen a `""` si la
+  fuente no está disponible. Contrato actualizado en
+  `docs/schemas/capture.md`.
+- **`watch --count N`** (Go y Python): ventana de observación FINITA
+  — el bucle renderiza N fotogramas y sale limpio con la MISMA
+  despedida que Ctrl-C/SIGTERM (`[*] watch stopped`); simétrico de
+  `keylog --stop-after` para reportes de deriva y diagnósticos de CI.
+  N >= 1, como mucho una vez, MUTUAMENTE EXCLUYENTE con `--once` (un
+  fotograma no es una ventana). Cableado en completions bash+zsh.
+- **Subcomando `help` en Python** (Go ya lo tenía): el propio mensaje
+  de error de Go recomienda "Run 'vault_kernel help' for usage" — en
+  Python ese consejo moría con "invalid choice" (exit 2). Ahora
+  imprime la ayuda completa a stdout y sale 0; el epílogo documenta
+  el bloque de exit codes.
+- **2 tests Go nuevos** (`TestParseWatchArgsCount`,
+  `TestGrammarErrorsAreUsage`) y **6 unittest Python nuevos**
+  (`TestWatchCount`, `TestExitCodeContract` con SUBPROCESOS reales,
+  `TestIoctlFailureRuntimeClass`, `TestHelpSubcommand`,
+  `TestBuildCaptureBundle.test_host_context_roundtrip`) → **46 Go +
+  82 Python + 15 completions + 13 payloads** al cierre.
+
+### Corregido
+
+| # | Bug | Fix |
+|---|-----|-----|
+| 1 | Matriz de exit codes partida (reproducida): Go `hide-file` (sin operando) → exit 1 con el error de DISPOSITIVO enmascarando el de uso — la gramática se validaba tras `openDevice()` (decisión de la ronda 4); argparse → exit 2. Python además era inconsistente consigo mismo: `keylog --timestamps` → 2 (parser.error) pero `keylog --stop-after 5` → 1 (SystemExit) | Gramática ANTES de dispositivo en Go: cada case del dispatcher parsea con los parsers puros y devuelve la closure; `openDevice` corre UNA vez tras el switch (cierra la deuda de la ronda 4). Tipo `usageError` + `usagef()`: TODOS los parsers de gramática devuelven la clase uso, `main()` la mapea con `errors.As` → exit 2. Python: `_reject` y el guard de `--stop-after` salen con 2 (stderr); invocación desnuda → ayuda a stderr + exit 2 en AMBOS clientes (antes Go 0 / Python 1) |
+| 2 | `help` no existía como subcomando de Python: exit 2 por "invalid choice" mientras el error de Go recomendaba ejecutarlo | Subparser `help` que imprime la ayuda y sale 0 (stdout); paridad de superficie restaurada (23 comandos) |
+| 3 | Fallo de ioctl en Python salía con exit 0: `_ioctl` imprimía el error y devolvía False, el comando terminaba "con éxito" sin haber hecho nada — el cliente Go salía 1 | `_ioctl` lanza `SystemExit(1)` tras reportar (clase runtime); test con mock de `fcntl.ioctl` que exige exit 1 |
+| 4 | Normalización de usage-strings de Go: `doctor`/`list`/`stats` imprimían su error sin el prefijo `usage: ` que sí usaban el resto | Prefijo `usage: ` uniforme en las 4 cadenas; `printUsageTo(w io.Writer)` permite mandar la usage a stdout (help) o stderr (invocación desnuda) |
+| 5 | demo.gif mostraba la era v3.11 | Regenerado con la salida REAL del binario v3.12, ahora con el bloque de exit codes en pantalla (`$?` → 2 tras un error de uso) |
+
+### Documentación
+
+- README reescrito en ambas secciones: tabla de códigos de salida con
+  ejemplos `$?`, comandos nuevos (`watch --count N`, subcomando
+  help), `capture` con `hostname`/`kernel_release`, conteos de suite
+  reales (46+82+15+13), badge y pie a 3.12.
+- `docs/schemas/capture.md`: campos `hostname`/`kernel_release`
+  documentados como aditivos (schema en 1), ejemplo JSON actualizado
+  con el orden contractual.
+- CHANGELOG: entrada `[3.12]` completa; cabeceras de completions a
+  v3.12.
+- `docs/ADR.md`: ADR 22 (contrato de exit codes 0/1/2, gramática
+  antes de dispositivo, `--count`, contexto de host del bundle,
+  subcomando help).
+
 ## [3.11] — 2026-09-15
 
 Ronda 8 del agente único. Prioridad declarada por el owner: **README

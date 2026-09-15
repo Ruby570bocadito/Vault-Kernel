@@ -17,7 +17,7 @@ by `TestBuildStatusReport` / `TestBuildStatusDocument`.
   "module_in_sysfs": false,
   "modinfo": {
     "filename": "/lib/modules/6.1.0/vault_kernel.ko",
-    "version": "3.11",
+    "version": "3.12",
     "author": "ruby570bocadito",
     "description": "vault_kernel kernel rootkit"
   }

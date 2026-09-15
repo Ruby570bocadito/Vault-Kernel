@@ -1,5 +1,5 @@
 #compdef vault_kernel vault_kernel_cli.py
-# vault_kernel — zsh completion (v3.11)
+# vault_kernel — zsh completion (v3.12)
 #
 # Parity twin of completions/vault_kernel.bash (same command surface,
 # same flags — the CLIs share one grammar, ADR 18/19). Self-contained:
@@ -13,7 +13,7 @@
 #
 # Flags per command mirror the CLIs' usage texts:
 #   doctor/list/stats/status  --json
-#   watch              --interval --once
+#   watch              --interval --once --count --count
 #   keylog             --follow --timestamps --interval --output --stop-after
 #   capture            --out --stdout
 #   hide-file/unhide-file fall back to file names (_files).
@@ -62,7 +62,9 @@ _vault_kernel() {
                 watch)
                     _arguments \
                         '--interval[refresh interval in ms (default 1000, min 50)]:MS:' \
-                        '--once[render a single frame and exit (no ANSI control)]'
+                        '--once[render a single frame and exit (no ANSI control)]' \
+                        '--count[render N frames and exit (finite window)]:N:' \
+                        '--count[render N frames and exit (finite window)]:N:'
                     ;;
                 keylog)
                     _arguments \

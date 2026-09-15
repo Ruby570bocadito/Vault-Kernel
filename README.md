@@ -5,7 +5,7 @@
 <div align="center">
 
 [![CI](https://github.com/Ruby570bocadito/Vault-Kernel/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/Ruby570bocadito/Vault-Kernel/actions/workflows/ci.yml)
-![Version](https://img.shields.io/badge/Version-3.11-8A2BE2?style=flat)
+![Version](https://img.shields.io/badge/Version-3.12-8A2BE2?style=flat)
 ![Language](https://img.shields.io/badge/Language-C-CC0000?style=flat&logo=c&logoColor=white)
 ![Client](https://img.shields.io/badge/Client-Go-00ADD8?style=flat&logo=go&logoColor=white)
 ![Platform](https://img.shields.io/badge/Platform-Linux%20x86__64-FF6600?style=flat&logo=linux&logoColor=white)
@@ -39,7 +39,7 @@
     <td width="55%" valign="top">
       <div align="center">
         <img src="docs/images/demo.gif" alt="Demo real del CLI" width="480"/>
-        <p><sub><b>Demo del CLI</b> — salida REAL del binario Go v3.11 (<code>version</code>, <code>status</code>, <code>status --json</code>, <code>magic-encode</code>, gramática estricta). Nada simulado: estos comandos funcionan sin módulo cargado.</sub></p>
+        <p><sub><b>Demo del CLI</b> — salida REAL del binario Go v3.12 (<code>version</code>, <code>status --json</code>, <code>magic-encode</code> y el contrato de <code>$?</code>: 2 uso · 1 runtime · 0 éxito). Nada simulado: estos comandos funcionan sin módulo cargado.</sub></p>
       </div>
     </td>
     <td width="45%" valign="top">
@@ -143,6 +143,7 @@ vault_kernel stats               # Estadísticas en vivo (hooks, contadores, upt
 vault_kernel stats --json        # Las mismas estadísticas en JSON para scripting
 vault_kernel watch               # Vista en vivo de stats + ocultos (refresco 1 s, Ctrl-C para salir)
 vault_kernel watch --once        # Un solo fotograma del panel, sin códigos ANSI (para scripts)
+vault_kernel watch --count 5     # Ventana FINITA: 5 fotogramas y salida limpia (para reportes)
 vault_kernel give-root [pid]     # Root instantáneo (por defecto: self)
 vault_kernel hide-file <name>    # Ocultar fichero/directorio (hide-file -- -raro para nombres con -)
 vault_kernel unhide-file <name>  # Revelar fichero/directorio
@@ -168,11 +169,35 @@ vault_kernel hide-module         # Ocultar de lsmod
 vault_kernel unhide-module       # Revelar en lsmod
 vault_kernel reset               # Limpiar TODAS las listas de ocultacion
 vault_kernel version             # Version del cliente y ABI
+vault_kernel help                # Ayuda completa (con la tabla de exit codes)
 ```
 
 > :bulb: **Autocompletado**: `source completions/vault_kernel.bash` en bash o instala
 > `completions/vault_kernel.zsh` en tu `fpath` de zsh — ambos completan comandos y
 > flags de los DOS clientes, y un test de paridad textual impide que se separen.
+
+### 🚦 Códigos de salida (contrato v3.12)
+
+Ambos clientes (Go y Python) comparten el MISMO contrato de tres clases — un script
+puede clasificar el fallo con `$?` sin parsear texto:
+
+| `$?` | Clase | Ejemplos |
+|------|-------|----------|
+| **0** | Éxito | `status`, `stats --json`, `capture --out ev.json` |
+| **1** | Error runtime | dispositivo no presente, fallo de ioctl, informe vacío, fichero no escribible |
+| **2** | Error de uso | operandos que faltan/sobran, valores inválidos (`hide-pid 0`), precondiciones (`keylog --stop-after` sin `--follow`), comando desconocido, invocación desnuda |
+
+```bash
+$ vault_kernel hide-file a b ; echo $?
+[-] Error: usage: vault_kernel hide-file <name> (unexpected argument: b)
+2
+$ vault_kernel hide-file secreto.txt ; echo $?   # sin módulo cargado
+[-] Error: cannot open /dev/vault_kernel: ... (is rootkit loaded?)
+1
+```
+
+Fijado por tests en ambos lados: `TestGrammarErrorsAreUsage` (Go) y
+`TestExitCodeContract` con subprocesos reales (Python).
 
 ### 🪄 Backdoor de palabra mágica
 
@@ -204,10 +229,10 @@ Lo que **se verifica automáticamente** (sin root, sin VM):
 make test
 
 # Tests unitarios Go (ioctl layout, FNV, serialización, gramática, paridad)
-cd client/go && go test ./... -v -count=1        # 43 tests
+cd client/go && go test ./... -v -count=1        # 46 tests
 
-# Unittest Python (gramática argparse, contrato JSON, avisos, stop-after)
-python3 tests/python/test_cli_parsing.py          # 73 tests
+# Unittest Python (gramática argparse, contrato JSON, exit codes, watch --count)
+python3 tests/python/test_cli_parsing.py          # 82 tests
 
 # Tests de regresión de payloads (13 checks: sintaxis del dropper,
 # round-trip del tarball, claves XOR hostiles, gcc del C stager…)
@@ -275,7 +300,7 @@ Vault-Kernel/
 ├── client/
 │   ├── vault_kernel_cli.py      # CLI Python (legacy, paridad con Go)
 │   └── go/                      # CLI Go (principal, binario único)
-│       ├── cmd/vault_kernel/    # 21 comandos
+│       ├── cmd/vault_kernel/    # 23 comandos
 │       └── internal/vaultkernel/# wrapper ioctl + render del panel + tests
 ├── completions/                 # Autocompletado bash + zsh (ambos clientes)
 ├── payloads/                    # Generador de payloads (Python)
@@ -291,21 +316,21 @@ Vault-Kernel/
 │   ├── schemas/                 # Contrato por comando (stats, list, doctor, capture, status)
 │   ├── agentes/                 # Informes de ronda del equipo de agentes IA
 │   └── images/                  # Banner + arquitectura + demo.gif + watch-panel.gif
-├── CHANGELOG.md                 # Historial detallado v3.0 → v3.11
+├── CHANGELOG.md                 # Historial detallado v3.0 → v3.12
 └── .github/workflows/ci.yml     # CI (8 jobs: Go, kernel runner, kernel matrix docker 5.15/6.8, shellcheck, completions, payloads, python+tests)
 ```
 
-### 🔄 Novedades v3.11
+### 🔄 Novedades v3.12
 
 Resumen de la ronda de mantenimiento — la lista completa está en
 [CHANGELOG.md](CHANGELOG.md):
 
-- **README visual, con salida real**: banner nuevo (sin versión incrustada — el badge manda), [diagrama de arquitectura renderizado](docs/images/architecture.png), **demo.gif regenerado con la salida REAL del binario v3.11** (el anterior era una sesión simulada estática de la era v3.1) y un segundo GIF con el panel `watch` y sus anotaciones de cambios, generado por el renderizador real de Go.
-- **`capture --out FILE --stdout`** (Go y Python): escribe el bundle 0600 Y imprime el JSON en stdout; el resumen se mueve a stderr para que `capture --out ev.json --stdout | jq` siga siendo un pipeline limpio. Cierra el backlog de v3.9.
-- **`keylog --follow --stop-after N`** (Go y Python): ventana de captura FINITA — el stream termina limpio tras N eventos (misma despedida que Ctrl-C/SIGTERM), ideal para scripts de laboratorio.
-- **Paridad POSIX `--`**: los operandos posicionales aceptan la forma `hide-file -- -fichero` en ambos clientes y rechazan el `-fichero` desnudo (antes Go lo mandaba al kernel y Python lo rechazaba: dos gramáticas para el mismo comando). Los números negativos (`give-root -5`) siguen funcionando en ambos.
-- **El aviso de no-root respeta el contrato sin-root**: `status`, `version`, `help` y `magic-encode` ya no imprimen `[!] Warning: not running as root` (el CLI Python además lo manda a stderr: contaminaba el stdout de `status --json` y rompía `| jq` justo en el flujo sin root que v3.10 creó).
-- **Autocompletado zsh** (`completions/vault_kernel.zsh`) con paridad textual verificada por test contra el gemelo bash; ambos actualizados con `--stdout` y `--stop-after`. Suite: **43 tests Go + 73 unittest Python + 15 checks de completions + 13 de payloads**.
+- **Contrato de códigos de salida 0/1/2** (Go y Python): `$?` distingue ahora ÉXITO de error RUNTIME (dispositivo/ioctl) y de error de USO (gramática) — la matriz estaba partida: Go salía 1 en todos los errores de gramática, y sin módulo el error de dispositivo enmascaraba el de uso (la gramática se validaba DESPUÉS de abrir el dispositivo). Python además era inconsistente consigo mismo (`--timestamps` → 2, `--stop-after` → 1). Fijado con subprocesos reales.
+- **Gramática ANTES de dispositivo en Go**: cada comando valida su sintaxis sin tocar `/dev/vault_kernel` — cierra la deuda de la ronda 4.
+- **`capture` con contexto de host**: el bundle gana `hostname` y `kernel_release` (aditivos — el schema JSON se queda en 1). DÓNDE se tomó la instantánea, la primera pregunta de cualquier revisor de lab.
+- **`watch --count N`**: ventana de observación FINITA — N fotogramas y salida limpia con la misma despedida que Ctrl-C (simétrico de `keylog --stop-after`), para reportes de deriva y CI.
+- **Subcomando `help` en Python** + invocación desnuda como error de uso (usage por stderr, exit 2) en ambos clientes; el epílogo y la usage documentan la tabla de exit codes.
+- **demo.gif regenerado con salida REAL del binario v3.12**, ahora con el bloque `$?` en pantalla. Suite: **46 tests Go + 82 unittest Python + 15 checks de completions + 13 de payloads**.
 
 ---
 
@@ -332,18 +357,19 @@ Vault-Kernel is a Linux **LKM rootkit engine** for red team training and authori
 - **Fully hidden files** — `getdents64`/`getdents`/`openat`/`unlinkat`/`statx` are hooked, so `ls`, `find`, `stat` and `lstat` all come up empty.
 - **Working magic backdoor** — `kill(pid, 35)` with `(port << 16) | fnv1a16(word)`; identical FNV-1a implementation in C, Go and Python, verified by unit tests.
 - **Real privilege escalation** — self-rooting via `commit_creds()`, arbitrary-PID rooting via in-place `cred` mutation under `task_lock()`.
-- **Live observability** — `stats` reports version, hooks, counters and uptime; `watch` repaints it live with change annotations, `watch --once` snapshots it; five JSON documents (`stats`, `list`, `doctor`, `capture`, `status`) for scripting, the last one usable **without root**.
-- **Finite capture windows** — `keylog --follow --stop-after N` ends the stream cleanly after N events; `--output FILE` transcripts every event 0600.
+- **Live observability** — `stats` reports version, hooks, counters and uptime; `watch` repaints it live with change annotations, `watch --once` snapshots it and `watch --count N` renders finite windows; five JSON documents (`stats`, `list`, `doctor`, `capture`, `status`) for scripting, the last one usable **without root**; `capture` bundles carry `hostname` + `kernel_release` host context.
+- **Finite capture windows** — `keylog --follow --stop-after N` ends the stream cleanly after N events; `--output FILE` transcripts every event 0600; `watch --count N` does the same for panel frames.
+- **Exit-code contract (0/1/2)** — both clients share the SAME three-class contract (0 success, 1 runtime/device error, 2 usage error), so scripts can classify failures from `$?` alone; grammar is validated BEFORE the device is opened; pinned by real-subprocess tests.
 - **One-shot teardown** — `vault_kernel reset` clears every hidden file, PID and port through a single ioctl.
 - **Two completion systems** — bash and zsh, textually-pinned parity by test; both cover the shared command surface.
 - **Honest CI** — eight jobs (Go toolchain, real `.ko` compilation on the runner, Docker matrix against 5.15/6.8 headers, shellcheck, functional bash-completion tests, payload regression, Python with unit tests); no masked failures.
 
-**Testing without a VM:** `make test` runs the Go suite, the payload regression and the completion checks (43 + 13 + 15); `python3 tests/python/test_cli_parsing.py` adds 73 parser/contract tests. Integration tests need a lab VM with the module loaded: `sudo bash tests/integration.sh`.
+**Testing without a VM:** `make test` runs the Go suite, the payload regression and the completion checks (46 + 13 + 15); `python3 tests/python/test_cli_parsing.py` adds 82 parser/contract tests. Integration tests need a lab VM with the module loaded: `sudo bash tests/integration.sh`.
 
 **Compatibility:** x86_64 kernels ≥ 4.17, up to 7.x (`class_create()` API adapted). WSL2 and ARM64 are not supported. See the Spanish section above for the full feature table, command reference and compatibility matrix.
 
 **License:** MIT — see [LICENSE](LICENSE). Built for learning; use it only where you have written permission.
 
 <div align="center">
-  <sub>Built with 🔥 by <a href="https://github.com/Ruby570bocadito">Ruby570bocadito</a> — Vault-Kernel v3.11</sub>
+  <sub>Built with 🔥 by <a href="https://github.com/Ruby570bocadito">Ruby570bocadito</a> — Vault-Kernel v3.12</sub>
 </div>
