@@ -5,7 +5,7 @@
 <div align="center">
 
 [![CI](https://github.com/Ruby570bocadito/Vault-Kernel/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/Ruby570bocadito/Vault-Kernel/actions/workflows/ci.yml)
-![Version](https://img.shields.io/badge/Version-3.7-8A2BE2?style=flat)
+![Version](https://img.shields.io/badge/Version-3.8-8A2BE2?style=flat)
 ![Language](https://img.shields.io/badge/Language-C-CC0000?style=flat&logo=c&logoColor=white)
 ![Client](https://img.shields.io/badge/Client-Go-00ADD8?style=flat&logo=go&logoColor=white)
 ![Platform](https://img.shields.io/badge/Platform-Linux%20x86__64-FF6600?style=flat&logo=linux&logoColor=white)
@@ -142,6 +142,7 @@ vault_kernel magic <word>        # Activar backdoor de palabra mágica
 vault_kernel magic-encode <word> <port>  # Imprimir el kill() listo para disparar
 vault_kernel keylog              # Leer pulsaciones capturadas
 vault_kernel keylog --follow     # Stream en vivo de pulsaciones (Ctrl-C para parar)
+vault_kernel keylog --follow --timestamps  # Stream con marca de tiempo [HH:MM:SS] por evento
 vault_kernel keylog-clear        # Limpiar buffer del keylogger
 vault_kernel hide-module         # Ocultar de lsmod
 vault_kernel unhide-module       # Revelar en lsmod
@@ -260,22 +261,23 @@ Vault-Kernel/
 ├── docs/
 │   ├── ADR.md                   # Decisiones de arquitectura
 │   ├── DETECTION.md             # Guía de detección para blue teams
+│   ├── SCHEMAS.md               # Contrato JSON de stats/list/doctor (--json)
 │   ├── agentes/                 # Informes de ronda del equipo de agentes IA
 │   └── images/                  # Banner + demo GIF
-├── CHANGELOG.md                 # Historial detallado v3.0 → v3.7
+├── CHANGELOG.md                 # Historial detallado v3.0 → v3.8
 └── .github/workflows/ci.yml     # CI (7 jobs: Go, kernel runner, kernel matrix docker 5.15/6.8, shellcheck, payloads, python+tests)
 ```
 
-### 🔄 Novedades v3.7
+### 🔄 Novedades v3.8
 
 Resumen de la ronda de mantenimiento — la lista completa está en
 [CHANGELOG.md](CHANGELOG.md):
 
-- **Nuevo comando `watch`** (Go y Python): vista en vivo de stats + listado de ocultos con refresco configurable (`--interval MS`, por defecto 1000 ms, mínimo 50), render puro testeado en ambos clientes y restauración de consola al salir con Ctrl-C.
-- **Esquemas JSON versionados**: `stats --json`, `list --json` y `doctor --json` añaden el campo `"schema": 1` — los scripts de lab pueden detectar cambios de formato en vez de fallar en silencio (ADR 17).
-- **`doctor --json` con paridad total Go/Python**: en las rutas de fallo, el CLI Go omitía las claves `device_open`/`stats_responds` (efecto de `omitempty` sobre bool) mientras Python las emitía como `false`; ahora ambos emiten el mismo documento en todos los caminos.
-- **Validación de entrada más dura en `--interval`**: el CLI Python aceptaba `--interval nan`/`inf` y moría en `time.sleep()` con traceback; ahora los argumentos no enteros, no finitos y negativos se rechazan con un error de uso claro.
-- **CI 7/7 verde** y la suite de tests llega a 24 unittest Python + 20 tests Go sin una sola dependencia externa.
+- **`keylog --follow --timestamps`** (Go y Python): cada evento del stream lleva marca de tiempo `[HH:MM:SS]` del sondeo que lo mostró — correlación temporal de capturas en el lab. El formateo es una función pura testeada en espejo en ambos clientes.
+- **Paridad de comandos cerrada**: el CLI Python gana `version` (mismo texto que Go) y el Go valida el PID de `give-root` como Python — `give-root abc` ya no escala **self** en silencio: es un error de uso.
+- **`keylog` con gramática estricta en Go**: los argumentos desconocidos se rechazan en vez de ignorarse en silencio (`keylog 500` ya no se comporta como `keylog`); parser extraído como función pura con tests.
+- **Contrato JSON documentado**: [docs/SCHEMAS.md](docs/SCHEMAS.md) fija los documentos de `stats --json`, `list --json` y `doctor --json` (campos, tipos, reglas de presencia) junto al campo `schema` (ADR 17).
+- **Higiene de repo**: todo fichero con shebang sale ejecutable del repo (`./client/vault_kernel_cli.py status` funciona), `make help` refleja los targets reales y `.gitignore` cubre `.ruff_cache/` explícitamente. Suite: 23 tests Go + 30 unittest Python.
 
 ---
 
@@ -311,5 +313,5 @@ Vault-Kernel is a Linux **LKM rootkit engine** for red team training and authori
 **License:** MIT — see [LICENSE](LICENSE). Built for learning; use it only where you have written permission.
 
 <div align="center">
-  <sub>Built with 🔥 by <a href="https://github.com/Ruby570bocadito">Ruby570bocadito</a> — Vault-Kernel v3.7</sub>
+  <sub>Built with 🔥 by <a href="https://github.com/Ruby570bocadito">Ruby570bocadito</a> — Vault-Kernel v3.8</sub>
 </div>

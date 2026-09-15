@@ -21,6 +21,9 @@ Module.symvers
 # Python
 __pycache__/
 *.pyc
+# Ruff's cache self-excludes via its own .gitignore; this line keeps the
+# intent explicit even if that file is removed or the cache is recreated.
+.ruff_cache/
 
 # IDE
 .vscode/

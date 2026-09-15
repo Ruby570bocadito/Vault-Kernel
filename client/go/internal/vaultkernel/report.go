@@ -11,7 +11,7 @@ import (
 // The report layout (src/ioctl.c) puts MULTIPLE key=value pairs on a
 // single line, e.g.
 //
-//	module=vault_kernel version=3.7
+//	module=vault_kernel version=3.8
 //	hooks_installed=7 hooks_planned=7
 //
 // A line-based parser that splits each line at its first '=' silently

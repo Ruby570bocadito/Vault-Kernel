@@ -374,3 +374,56 @@ verificado por tests en ambos lados; `watch` reutiliza los parsers
 compartidos de v3.6 sin tocar el módulo, y su panel es un contrato
 fijado por tests espejo (Go y Python) para que las paridades futuras no
 se rompan en silencio.
+
+## 18. v3.8 — Paridad de superficie de comandos, `keylog --timestamps` y bits de ejecución
+
+**Fecha:** 2026-09-15 · **Estado:** Aceptado e implementado
+
+**Contexto.** Los dos CLIs (Go y Python) son hermanos con paridad de
+comportamiento como objetivo, pero la ronda 5 encontró tres desajustes
+reales: (1) `give-root` en Go descartaba el error de `strconv.Atoi`
+(`pid, _`), de modo que un PID no numérico se convertía en pid=0 y
+escalaba SELF en silencio — el CLI Python lo rechaza como error de uso
+(`argparse type=int`); un typo ejecutaba una operación distinta a la
+pedida, y en un plano de control eso es un bug aunque el camino
+resultante sea "válido". (2) El CLI Python no tenía comando `version`
+(el Go lo tiene desde v3.6). (3) La gramática de `keylog` en Go
+aceptaba argumentos desconocidos en silencio en el camino one-shot
+(`keylog 500` sin `--follow` ignoraba el intervalo), mientras Python
+(argparse) los rechaza. A esto se añade una demanda de producto del
+lab: correlacionar temporalmente capturas del keylogger, que hoy se
+imprimen sin ninguna referencia temporal.
+
+**Decisión.** (1) `give-root` Go extrae el parsing a `parseGiveRootPID()`
+— función pura testeable: sin argumento (o pid<=0) sigue siendo "self"
+por contrato documentado del módulo, argumento no numérico y argumentos
+extra son error de uso; el contrato del kernel NO cambia. (2) El CLI
+Python añade `version` con `format_version_line()`, que replica el
+texto exacto de `printVersion()` de Go (client version, magic 0xC0,
+señal 35). (3) `keylog` Go extrae su gramática a `parseKeylogArgs()` —
+estricta: `--follow` y `--timestamps` en cualquier orden, intervalo
+posicional solo tras `--follow` (suelo 50 ms), cualquier otro argumento
+es error; `--timestamps` sin `--follow` es error en AMBOS clientes.
+(4) La marca de tiempo de `keylog --follow --timestamps` es la del
+SONDEO que mostró el contenido, no de la pulsación: el buffer del
+módulo no lleva tiempo por tecla y falsear una precisión que no existe
+sería peor que una cota honesta — se documenta en la ayuda y en
+SCHEMAS/README. Sin `--timestamps`, la salida es byte-idéntica a v3.7.
+El formateo vive en funciones puras espejo (`formatKeylogEvent` /
+`format_keylog_event`) con tests en ambos clientes. (5) Higiene de
+repo: todo fichero con shebang se versiona con bit de ejecución
+(política: un fichero ejecutable por shebang debe poder ejecutarse
+directo tras el clone), y `.gitignore` declara explícitamente
+`.ruff_cache/` aunque el caché se auto-excluya.
+
+**Consecuencias.** La paridad de superficie de comandos Go/Python
+queda completa para todos los comandos de lectura y de argumentos
+simples; el contrato de los documentos JSON de ambos clientes está
+documentado en `docs/SCHEMAS.md` (junto al campo `schema` de ADR 17);
+las gramáticas de argumentos son ahora funciones puras con tests, de
+modo que el próximo flag hereda el patrón en vez de crecer dentro del
+`switch`; y la auditoría de la ronda fija el método definitivo de
+verificación de caracteres: `od -c` (el canal de render del agente se
+come secuencias ANSI incluso dentro de salidas `repr()` — los conteos
+de corchetes de la ronda 4 detectan desequilibrios, no caracteres
+ausentes).

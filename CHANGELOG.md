@@ -6,6 +6,77 @@ Go y el generador de payloads lo replican.
 
 ---
 
+## [3.8] — 2026-09-15
+
+Ronda 5 del agente único. Prioridad: **paridad de los dos clientes y
+contrato de salida**. La auditoría de la ronda re-verificó byte a byte
+(esta vez con `od -c`, método definitivo) las dos sospechas que arrastraba
+el canal de render del agente — los colores ANSI de los arneses de test y
+la restauración del cursor en `watch` de Go — y confirmó que AMBAS están
+correctas en disco: eran de nuevo artefactos de render, no del repo. El
+bug real de la ronda es la validación del PID de `give-root` en Go. El
+módulo kernel no se toca: estable desde v3.4.
+
+### Añadido
+
+- **`keylog --follow --timestamps`** (Go y Python): cada evento del
+  stream se emite en línea nueva con la marca `[HH:MM:SS]` del sondeo
+  que lo mostró (cota honesta: el buffer del módulo no lleva tiempo por
+  pulsación). El formateo es una función pura — `formatKeylogEvent` /
+  `format_keylog_event` — testeada en espejo en ambos clientes; sin
+  `--timestamps` el comportamiento es byte-idéntico al de v3.7.
+- **Comando `version` en el CLI Python** (paridad con Go, que lo tenía
+  desde v3.6): `format_version_line()` replica el texto de
+  `printVersion()` de Go — `vault_kernel CLI v3.8 (ioctl magic 0xC0,
+  signal trigger 35)`.
+- **`docs/SCHEMAS.md`**: contrato de los documentos JSON de `stats
+  --json`, `list --json` y `doctor --json` — campos, tipos, reglas de
+  presencia y política de versionado del campo `schema` (complementa
+  ADR 17; cerraba el backlog de la ronda 4).
+- **3 tests Go nuevos** (`TestParseGiveRootPID`, `TestParseKeylogArgs`,
+  `TestFormatKeylogEvent`) y **6 unittest Python nuevos**
+  (`TestFormatKeylogEvent`, `TestVersionCommand`) → 23 Go + 30 Python.
+
+### Corregido
+
+| # | Bug | Fix |
+|---|-----|-----|
+| 1 | **`give-root` Go ignoraba el error de `strconv.Atoi` del PID** (`pid, _`): un typo no numérico (`give-root abc`) se convertía en pid=0 → escalada **self** silenciosa, mientras el CLI Python la rechazaba como error de uso. Mismo comando, dos comportamientos según cliente | El parsing se extrae a `parseGiveRootPID()`: sin argumento (o pid<=0) sigue siendo "self" (contrato documentado del módulo), pero un argumento no numérico o argumentos extra son error de uso — paridad con `argparse type=int`. Testeado sin dispositivo |
+| 2 | **`keylog` Go aceptaba argumentos desconocidos en silencio**: `keylog 500` (sin `--follow`) ignoraba el `500` y hacía la lectura one-shot; el intervalo posicional solo se validaba tras `--follow` | Gramática estricta en `parseKeylogArgs()`: flags `--follow`/`--timestamps` en cualquier orden, intervalo posicional solo tras `--follow` (mínimo 50), cualquier otro argumento es error de uso. `--timestamps` sin `--follow` es error en AMBOS clientes |
+
+### Documentación e higiene
+
+- **Bits de ejecución**: los 7 ficheros con shebang salen ahora
+  ejecutables del repo (`tests/test_payloads.sh` ya lo estaba) —
+  `./client/vault_kernel_cli.py status`, `./payloads/builder.sh`,
+  `./tests/integration.sh` funcionan directamente; elimina los avisos
+  `EXE001` de ruff.
+- **`make help`** refleja los targets reales (`test-go`,
+  `test-payloads`, `docker-test` no existían en la ayuda; la
+  descripción de `test` databa de antes de la regresión de payloads).
+- **`.gitignore`** añade `.ruff_cache/` explícito (hasta ahora solo
+  estaba cubierto por el `.gitignore` interno del propio caché de
+  ruff).
+- **README**: `Novedades v3.8`, badge y pie 3.7 → 3.8, línea de
+  `keylog --follow --timestamps` en la lista de comandos,
+  `docs/SCHEMAS.md` en el árbol.
+- Entrada **ADR 18**: paridad de superficie de comandos, semántica de
+  `--timestamps` (marca del sondeo, no de la pulsación) y política de
+  bits de ejecución.
+
+### Auditoría de la ronda (verificaciones a nivel de bytes)
+
+- Los colores ANSI de `tests/test_payloads.sh` y `tests/integration.sh`
+  (`RED=$'\e[0;31m'`, etc.) están COMPLETOS en disco — la sospecha de
+  esta ronda era un falso positivo del canal de render, que se come
+  secuencias como `[0;31m` incluso dentro de salidas `repr()` de
+  Python. `od -c` es el único verificador fiable.
+- La restauración del cursor de `watch` en Go (`\x1b[?25h` en el
+  `defer` de `runWatch`) está completa en disco — segunda verificación
+  con `od -c`, mismo resultado.
+
+---
+
 ## [3.7] — 2026-09-15
 
 Ronda 4 del agente único. Prioridad: **producto del plano de control** —
