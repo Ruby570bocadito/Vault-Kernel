@@ -95,7 +95,16 @@ jobs:
 
       - name: Run shellcheck
         run: |
-          shellcheck tests/integration.sh tests/test_payloads.sh docker/build.sh docker/test.sh payloads/builder.sh
+          shellcheck tests/integration.sh tests/test_payloads.sh tests/test_completions.sh docker/build.sh docker/test.sh payloads/builder.sh completions/vault_kernel.bash
+
+  completions:
+    name: Bash completions (functional)
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Run completion tests (no root, no kernel, no bash-completion pkg)
+        run: bash tests/test_completions.sh
 
   payloads:
     name: Payload regression (dropper + stagers)

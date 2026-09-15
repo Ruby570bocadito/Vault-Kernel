@@ -427,3 +427,71 @@ verificación de caracteres: `od -c` (el canal de render del agente se
 come secuencias ANSI incluso dentro de salidas `repr()` — los conteos
 de corchetes de la ronda 4 detectan desequilibrios, no caracteres
 ausentes).
+
+## 19. v3.9 — `capture` (evidencia), `keylog --output`, autocompletado bash y cierre sistémico de las gramáticas
+
+**Fecha:** 2026-09-15 · **Estado:** Aceptado e implementado
+
+**Contexto.** Tres demandas convergen en la ronda 6. (1) Un lab de red
+team que documenta hallazgos necesita citar el estado del implante en
+UN artefacto: hoy encadena `stats --json`, `list --json` y una lectura
+de `keylog` a mano, sin timestamp compartido ni garantía de que las
+tres lecturas describen el mismo instante. (2) Las capturas del
+keylogger se pierden al cerrar el terminal: el stream solo se imprime
+y el operador lo redirige ad-hoc (perdiendo las marcas de tiempo o el
+diff de eventos según cómo lo haga). (3) La auditoría de la ronda
+construyó la primera matriz comando×cliente de gramáticas y halló un
+patrón SISTÉMICO, no puntual: el dispatcher Go validaba "argumentos
+suficientes" pero nunca rechazaba el exceso — 15 de 20 cases ignoraban
+argumentos extra en silencio (`hide-file a b` ocultaba "a", `watch
+--interval 500 extra` ignoraba "extra", `list extra` listaba igual) —
+mientras el CLI Python (argparse) los rechaza todos; además `shell` no
+validaba `ip:port` (Go: "contiene :", Python: nada) y `hide-pid`
+aceptaba pid <= 0 en ambos (el módulo añade cualquier int a la lista:
+"pid: -5"). Por último, el cuarto documento JSON que `capture` añade
+dispara la condición que el backlog de v3.8 dejó escrita: reestructurar
+SCHEMAS.md por comando.
+
+**Decisión.** (1) `capture` es un comando nuevo en AMBOS clientes:
+builders puros espejo (`buildCaptureReport` / `build_capture_bundle`)
+que ensamblan el envelope contractual schema/captured_at/
+client_version/module_in_sysfs/stats/hidden/keylog; `stats` reutiliza
+la MISMA conversión numérica de `stats --json` (extraída a `statsMap`
+en Go para que ambas salidas la compartan) y `hidden` la forma de
+`list --json`; `captured_at` es UTC RFC3339 del SNAPSHOT (leído tras
+los buffers: cota superior honesta, no tiempo por evento); con `--out
+FILE` el fichero se crea 0600 porque un bundle puede contener
+pulsaciones — la misma política que aplica `keylog --output`. (2)
+`keylog --output FILE` escribe cada evento tal y como se imprime
+(transcripción fiel, marcas incluidas si `--timestamps`) en un fichero
+apéndice con flush+fsync por evento; la apertura es PEREZOSA (con el
+primer registro): un buffer vacío no crea fichero, semántica idéntica
+en ambos clientes. La gramática extiende `parseKeylogArgs`/argparse:
+operand obligatorio, un solo `--output`, cualquier posición.
+(3) Autocompletado bash autocontenido (sin paquete bash-completion)
+para los DOS binarios, con flags por subcomando y fallback a ficheros
+en hide-file/unhide-file; se instala con `source` o copiando a
+/etc/bash_completion.d/. Su test funcional (`tests/test_completions.sh`,
+11 checks) maneja COMP_WORDS/COMP_CWORD directamente y corre en CI
+(nuevo job: 8 jobs). (4) Cierre de la política de gramáticas: TODOS
+los parsers son funciones puras testeadas (`parseWatchArgs`,
+`parseShellTarget`, `parsePIDArg`, `parseCaptureArgs`,
+`parseKeylogArgs`, `parseGiveRootPID`) y TODO case del dispatcher
+rechaza argumentos extra — la regla del repo pasa a ser "los errores
+de argumentos nunca se descartan ni se ignoran" (extensión de la
+recomendación 1 de la ronda 5); `shell` valida host no vacío + puerto
+1-65535 con split por el ÚLTIMO `:` (IPv6 literal queda fuera por
+contrato del módulo, que parte en el primero), `hide-pid`/`unhide-pid`
+exigen pid >= 1 en ambos clientes (el contrato kernel no cambia). (5)
+SCHEMAS.md se divide en docs/schemas/{stats,list,doctor,capture}.md
+con SCHEMAS.md como índice.
+
+**Consecuencias.** Un operador documenta con `capture --out
+evidencia.json` y cita un único fichero con permisos 0600; los capturas
+sobreviven al terminal y son transcriptibles byte a byte; el tabula
+completa comandos y flags en los dos clientes sin dependencias; los
+caminos de error de argumentos son IDÉNTICOS entre clientes y están
+pinados por tests (la clase de bug "silencioso" queda cerrada
+estructuralmente, no caso a caso); y el contrato JSON vive en cuatro
+páginas por comando que crean sin fricción cuando el módulo gane su
+quinto documento.

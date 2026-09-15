@@ -5,7 +5,7 @@
 <div align="center">
 
 [![CI](https://github.com/Ruby570bocadito/Vault-Kernel/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/Ruby570bocadito/Vault-Kernel/actions/workflows/ci.yml)
-![Version](https://img.shields.io/badge/Version-3.8-8A2BE2?style=flat)
+![Version](https://img.shields.io/badge/Version-3.9-8A2BE2?style=flat)
 ![Language](https://img.shields.io/badge/Language-C-CC0000?style=flat&logo=c&logoColor=white)
 ![Client](https://img.shields.io/badge/Client-Go-00ADD8?style=flat&logo=go&logoColor=white)
 ![Platform](https://img.shields.io/badge/Platform-Linux%20x86__64-FF6600?style=flat&logo=linux&logoColor=white)
@@ -54,7 +54,7 @@ flowchart LR
     end
 
     subgraph Device["💾 /dev/vault_kernel"]
-        IOC["ioctl interface<br/>17 commands incl. GET_STATS"]
+        IOC["ioctl interface<br/>16 commands incl. GET_STATS"]
     end
 
     CLI -->|ioctl| Device
@@ -143,12 +143,19 @@ vault_kernel magic-encode <word> <port>  # Imprimir el kill() listo para dispara
 vault_kernel keylog              # Leer pulsaciones capturadas
 vault_kernel keylog --follow     # Stream en vivo de pulsaciones (Ctrl-C para parar)
 vault_kernel keylog --follow --timestamps  # Stream con marca de tiempo [HH:MM:SS] por evento
+vault_kernel keylog --follow --output cap.log  # Stream que TAMBIEN se guarda en fichero (0600)
 vault_kernel keylog-clear        # Limpiar buffer del keylogger
+vault_kernel capture             # Bundle de evidencia: stats + ocultos + keylog en un JSON
+vault_kernel capture --out ev.json  # El mismo bundle escrito a fichero (0600)
 vault_kernel hide-module         # Ocultar de lsmod
 vault_kernel unhide-module       # Revelar en lsmod
-vault_kernel reset               # Limpiar TODAS las listas de ocultación
-vault_kernel version             # Versión del cliente y ABI
+vault_kernel reset               # Limpiar TODAS las listas de ocultacion
+vault_kernel version             # Version del cliente y ABI
 ```
+
+> :bulb: **Autocompletado bash**: `source completions/vault_kernel.bash` (o copia a
+> `/etc/bash_completion.d/`) — completa comandos y flags de los DOS clientes.
+> Testado funcionalmente en CI.
 
 ### 🪄 Backdoor de palabra mágica
 
@@ -176,7 +183,7 @@ kill -s 35 291290303
 Lo que **se verifica automáticamente** (sin root, sin VM):
 
 ```bash
-# Todo lo no-VM de una vez (tests Go + regresión de payloads)
+# Todo lo no-VM de una vez (tests Go + regresión de payloads + completions)
 make test
 
 # Tests unitarios Go (ioctl layout, FNV, serialización)
@@ -185,6 +192,9 @@ cd client/go && go test ./... -v -count=1
 # Tests de regresión de payloads (13 checks: sintaxis del dropper,
 # round-trip del tarball, claves XOR hostiles, gcc del C stager…)
 bash tests/test_payloads.sh
+
+# Test funcional del autocompletado bash (sin paquete bash-completion)
+make test-completions
 
 # Compilación real del .ko (la hace CI contra 5.15 y 6.8; local
 # contra cualquier set de headers instalado)
@@ -207,8 +217,9 @@ INSMOD=/bin/true bash dropper.sh    # ejecuta extract → build → (fake) load
 
 **CI** valida en cada push: `gofmt`/`go vet`/`go build`/`go test`, compilación
 real del `.ko` contra los headers del runner, **matriz Docker contra headers
-5.15 y 6.8**, `shellcheck` de todos los scripts, tests de payloads y
-`py_compile`+`ruff` del código Python. Sin atajos: si está verde, compila.
+5.15 y 6.8**, `shellcheck` de todos los scripts, tests de payloads, test funcional de
+completions y `py_compile`+`ruff` del código Python. Sin atajos: si está
+verde, compila.
 
 ### 🧠 Compatibilidad de kernel
 
@@ -245,39 +256,42 @@ Vault-Kernel/
 │   ├── backdoor.c               # reverse shell + magic packet (hash FNV-1a)
 │   ├── priv_esc.c               # give-root (self + PID remoto)
 │   ├── stealth.c                # ocultación lsmod/sysfs reversible
-│   ├── ioctl.c                  # /dev/vault_kernel (17 ioctls)
+│   ├── ioctl.c                  # /dev/vault_kernel (16 ioctls)
 │   ├── core.h                   # headers + capa compat pt_regs + constantes
 │   └── Makefile
 ├── client/
 │   ├── vault_kernel_cli.py      # CLI Python (legacy, paridad con Go)
 │   └── go/                      # CLI Go (principal, binario único)
-│       ├── cmd/vault_kernel/    # 18 comandos
+│       ├── cmd/vault_kernel/    # 21 comandos
 │       └── internal/vaultkernel/# wrapper ioctl + tests
+├── completions/                 # Autocompletado bash (ambos clientes)
 ├── payloads/                    # Generador de payloads (Python)
 ├── docker/                      # Build + red de laboratorio (compose único)
 ├── tests/
 │   ├── integration.sh           # Suite de integración (VM con módulo cargado)
-│   └── test_payloads.sh         # Regresión de payloads (corre en cualquier sitio)
+│   ├── test_payloads.sh         # Regresión de payloads (corre en cualquier sitio)
+│   └── test_completions.sh      # Test funcional del autocompletado
 ├── docs/
 │   ├── ADR.md                   # Decisiones de arquitectura
 │   ├── DETECTION.md             # Guía de detección para blue teams
-│   ├── SCHEMAS.md               # Contrato JSON de stats/list/doctor (--json)
+│   ├── SCHEMAS.md               # Contrato JSON (índice): stats/list/doctor/capture
+│   ├── schemas/                 # Contrato por comando (stats, list, doctor, capture)
 │   ├── agentes/                 # Informes de ronda del equipo de agentes IA
 │   └── images/                  # Banner + demo GIF
-├── CHANGELOG.md                 # Historial detallado v3.0 → v3.8
-└── .github/workflows/ci.yml     # CI (7 jobs: Go, kernel runner, kernel matrix docker 5.15/6.8, shellcheck, payloads, python+tests)
+├── CHANGELOG.md                 # Historial detallado v3.0 → v3.9
+└── .github/workflows/ci.yml     # CI (8 jobs: Go, kernel runner, kernel matrix docker 5.15/6.8, shellcheck, completions, payloads, python+tests)
 ```
 
-### 🔄 Novedades v3.8
+### 🔄 Novedades v3.9
 
 Resumen de la ronda de mantenimiento — la lista completa está en
 [CHANGELOG.md](CHANGELOG.md):
 
-- **`keylog --follow --timestamps`** (Go y Python): cada evento del stream lleva marca de tiempo `[HH:MM:SS]` del sondeo que lo mostró — correlación temporal de capturas en el lab. El formateo es una función pura testeada en espejo en ambos clientes.
-- **Paridad de comandos cerrada**: el CLI Python gana `version` (mismo texto que Go) y el Go valida el PID de `give-root` como Python — `give-root abc` ya no escala **self** en silencio: es un error de uso.
-- **`keylog` con gramática estricta en Go**: los argumentos desconocidos se rechazan en vez de ignorarse en silencio (`keylog 500` ya no se comporta como `keylog`); parser extraído como función pura con tests.
-- **Contrato JSON documentado**: [docs/SCHEMAS.md](docs/SCHEMAS.md) fija los documentos de `stats --json`, `list --json` y `doctor --json` (campos, tipos, reglas de presencia) junto al campo `schema` (ADR 17).
-- **Higiene de repo**: todo fichero con shebang sale ejecutable del repo (`./client/vault_kernel_cli.py status` funciona), `make help` refleja los targets reales y `.gitignore` cubre `.ruff_cache/` explícitamente. Suite: 23 tests Go + 30 unittest Python.
+- **Comando `capture`** (Go y Python): bundle de evidencia en UN documento JSON — stats + lista de ocultos + buffer del keylog + `captured_at` UTC. Con `--out FILE` se escribe a fichero con permisos 0600 (las capturas pueden contener pulsaciones). Cuarto documento del contrato JSON ([docs/schemas/capture.md](docs/schemas/capture.md)).
+- **`keylog --output FILE`** (Go y Python): el stream de `--follow` (o la lectura one-shot) se escribe TAMBIÉN a fichero, byte a byte como se imprime en terminal, con flush por evento; fichero creado 0600.
+- **Autocompletado bash** para los dos clientes (`completions/vault_kernel.bash`): completa comandos, flags por subcomando y rutas para hide-file; sin dependencia del paquete bash-completion y con test funcional en CI (nuevo job — CI pasa a 8 jobs).
+- **Gramáticas estrictas completadas en Go**: los argumentos sobrantes ya se rechazan en TODOS los comandos (`hide-file a b`, `watch --interval 500 extra`, `list extra`... eran ignorados en silencio); `shell` valida `ip:puerto` real en ambos clientes y `hide-pid` exige pid ≥ 1 en ambos.
+- **`docs/SCHEMAS.md` reestructurado por comando** (`docs/schemas/`) con el contrato de `capture`; README con los conteos reales (16 ioctls, 21 comandos Go). Suite: 27 tests Go + 38 unittest Python + 11 checks de completions.
 
 ---
 
@@ -313,5 +327,5 @@ Vault-Kernel is a Linux **LKM rootkit engine** for red team training and authori
 **License:** MIT — see [LICENSE](LICENSE). Built for learning; use it only where you have written permission.
 
 <div align="center">
-  <sub>Built with 🔥 by <a href="https://github.com/Ruby570bocadito">Ruby570bocadito</a> — Vault-Kernel v3.8</sub>
+  <sub>Built with 🔥 by <a href="https://github.com/Ruby570bocadito">Ruby570bocadito</a> — Vault-Kernel v3.9</sub>
 </div>

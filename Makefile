@@ -1,4 +1,4 @@
-.PHONY: all kernel client test test-go test-payloads test-integration docker-build docker-up docker-down clean
+.PHONY: all kernel client test test-go test-payloads test-completions test-integration docker-build docker-up docker-down clean
 
 all: kernel client
 
@@ -19,14 +19,18 @@ test-go:
 test-payloads:
 	bash tests/test_payloads.sh
 
+# Run bash-completion tests (no root, no kernel, no bash-completion pkg)
+test-completions:
+	bash tests/test_completions.sh
+
 # Run integration tests (requires VM with loaded kernel module)
 test-integration:
 	@echo "[!] Integration tests require a native Linux VM with the kernel module loaded."
 	@echo "    Run: sudo bash tests/integration.sh"
 
-# All tests (unit + payloads; integration stays VM-only)
-test: test-go test-payloads
-	@echo "[*] Unit and payload tests passed."
+# All tests (unit + payloads + completions; integration stays VM-only)
+test: test-go test-payloads test-completions
+	@echo "[*] Unit, payload and completion tests passed."
 	@echo "[!] For integration tests, run on a VM: sudo bash tests/integration.sh"
 
 # Docker operations
@@ -57,9 +61,10 @@ help:
 	@echo "Targets:"
 	@echo "  kernel           Build kernel module (requires GCC + kernel headers)"
 	@echo "  client           Build Go CLI client"
-	@echo "  test             Run Go unit tests + payload regression (no root, no VM)"
+	@echo "  test             Run Go unit tests + payload regression + completion tests (no root, no VM)"
 	@echo "  test-go          Run Go unit tests only"
 	@echo "  test-payloads    Run payload regression only"
+	@echo "  test-completions Run the bash-completion functional test only"
 	@echo "  test-integration Run the integration suite (VM with the module loaded)"
 	@echo "  docker-build     Build kernel module in Docker"
 	@echo "  docker-up        Start multi-node test environment"

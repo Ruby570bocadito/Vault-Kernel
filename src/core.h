@@ -43,7 +43,7 @@
 
 /* -- Module metadata -- */
 #define VAULT_KERNEL_NAME    "vault_kernel"
-#define VAULT_KERNEL_VERSION "3.8"
+#define VAULT_KERNEL_VERSION "3.9"
 #define VAULT_KERNEL_AUTHOR  "ruby570bocadito"
 #define VAULT_KERNEL_TAG     "[vault_kernel]"
 

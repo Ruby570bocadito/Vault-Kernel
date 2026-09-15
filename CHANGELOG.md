@@ -6,6 +6,96 @@ Go y el generador de payloads lo replican.
 
 ---
 
+## [3.9] — 2026-09-15
+
+Ronda 6 del agente único. Prioridad: **producto de lab (evidencia y
+persistencia de capturas) + cierre sistémico de la gramática de
+argumentos**. La auditoría de la ronda construyó por primera vez una
+matriz comando×cliente de gramáticas y encontró un patrón sistémico: el
+dispatcher Go validaba "argumentos suficientes" pero nunca rechazaba el
+EXCESO (15 de 20 cases ignoraban argumentos extra en silencio). El
+módulo kernel no se toca (cuarta ronda consecutiva): estable desde v3.4.
+
+### Añadido
+
+- **Comando `capture`** (Go y Python): bundle de evidencia en un solo
+  documento JSON — `stats` (misma conversión que `stats --json`) +
+  `hidden` (misma forma que `list --json`) + `keylog` (buffer
+  verbatim) + `captured_at` (UTC RFC3339 del snapshot) +
+  `module_in_sysfs`. Builders puros espejo testados
+  (`buildCaptureReport` / `build_capture_bundle`). Con `--out FILE` el
+  fichero se crea 0600 (las capturas pueden contener pulsaciones) y se
+  imprime un resumen de una línea; sin `--out`, el JSON va a stdout.
+  Cuarto documento del contrato JSON — `docs/SCHEMAS.md` se
+  reestructura por comando (docs/schemas/{stats,list,doctor,capture}.md),
+  disparando la condición que dejó escrita el backlog de la ronda 5.
+- **`keylog --output FILE`** (Go y Python): cada evento del stream (y
+  la lectura one-shot) se añade TAMBIÉN a un fichero apéndice con
+  flush+fsync por evento, como transcripción fiel de lo impreso en
+  terminal (con marcas de tiempo si `--timestamps` está activo).
+  Fichero creado 0600; el fichero solo se crea con el PRIMER registro
+  (un buffer vacío no crea fichero, paridad exacta Go/Python).
+  Gramática: `--output` con operand obligatorio, un solo uso, en
+  cualquier posición; `--timestamps` sigue exigiendo `--follow`.
+- **Autocompletado bash** (`completions/vault_kernel.bash`): cubre los
+  DOS clientes (el binario Go y el CLI Python comparten superficie),
+  completa comandos, flags por subcomando (`--json`, `--interval`,
+  `--follow/--timestamps/--interval/--output`, `--out`) y rutas del
+  filesystem para hide-file/unhide-file. Autocontenido: NO requiere el
+  paquete bash-completion (solo `complete`/`compgen` builtin).
+- **Test funcional de completions** (`tests/test_completions.sh`, 11
+  checks): `bash -n`, registro de ambos binarios con `complete`,
+  superficie de comandos de nivel 1, flags por comando, fallback a
+  ficheros y ausencia de invención de flags en comandos posicionales.
+  Nuevo job de CI `Bash completions (functional)` — CI pasa de 7 a 8
+  jobs — y `make test`/`make test-completions`.
+- **8 tests Go nuevos** (`TestParseKeylogArgsOutput`,
+  `TestParseCaptureArgs`, `TestKeylogSink`, `TestBuildCaptureReport`,
+  `TestParseWatchArgs`, `TestParseShellTarget`, `TestParsePIDArg`,
+  `TestStrictArgs`) y **8 unittest Python nuevos** → 27 Go + 38 Python
+  + 11 completions.
+
+### Corregido
+
+| # | Bug | Fix |
+|---|-----|-----|
+| 1 | **Gramática Go permisiva sistémica**: 15 de 20 cases del dispatcher ignoraban argumentos extra en silencio (`hide-file a b` ocultaba "a"; `watch --interval 500 extra`, `list extra`, `keylog-clear extra`...), mientras el CLI Python (argparse) los rechaza. Paridad rota en TODOS los caminos de error | Gramática estricta en todo el dispatcher: `parseWatchArgs` (pura, testeada), validación de operandos exactos y `--json`/`--out` únicos en doctor/list/stats/status/capture; helpers `expectExactArgs`/`rejectExtra` + tests. `status extra`/`version extra` también errores |
+| 2 | **`shell` sin validación real de `ip:port`**: Go solo exigía "contiene `:`" (aceptaba `abc:def`; el kernel lo rechaba con EINVAL); Python no validaba NADA. El kernel era la única barrera | `parseShellTarget` (Go, pura + tests) y `_shell_target_arg` (Python): split en el ÚLTIMO `:`, host no vacío, puerto numérico 1-65535. IPv6 literal no soportado (el módulo parte en el primer `:`) — documentado en ambos |
+| 3 | **`hide-pid`/`unhide-pid` aceptaban pid ≤ 0** en ambos clientes: el módulo añade cualquier int a la hide-list (`pid: -5` en `list`), entrada sin sentido; `hooked_kill` solo filtra pid > 0 | Validación cliente pid ≥ 1 en ambos (`parsePIDArg` Go + `_pid_arg` Python, testeada); el contrato del módulo no cambia |
+| 4 | **`keylog` one-shot de Python con buffer VACÍO no imprimía NADA** (cur==prev=="" saltaba el print); Go imprime "[*] (no keystrokes captured)". Bug de paridad real arrastrado desde v3.5 | Camino one-shot reestructurado: imprime siempre (buffer o "(no keystrokes captured)"), el diff/sink vive solo en follow. Testeado |
+| 5 | **README con conteos erróneos**: "17 ioctls/commands" ×2 (realidad: 16, 0x01–0x10) y "18 comandos" Go (realidad: 21) | Corregidos ambos; el árbol del README refleja completions/, tests/test_completions.sh y docs/schemas/ |
+
+### Documentación
+
+- **`docs/SCHEMAS.md`** pasa a índice de cuatro documentos con tablas
+  por comando en `docs/schemas/{stats,list,doctor,capture}.md`
+  (reestructuración condicionada del backlog v3.8). `capture.md` fija
+  el orden contractual de las claves del envelope y la política 0600.
+- **README**: `Novedades v3.9`, sección de comandos con `capture`,
+  `keylog --output` y la nota de autocompletado, tree actualizado,
+  badge/pie 3.9, `make test-completions` en Testing, CI 8 jobs.
+- **ADR 19**: decisión de `capture` (evidencia, timestamp del snapshot,
+  0600), `keylog --output` (transcripción fiel, apéndice, creación
+  perezosa), política de autocompletado (autocontenida, dos clientes)
+  y cierre de la política de gramáticas estrictas (todo parser puro +
+  rechazo de exceso).
+
+### Auditoría de la ronda
+
+- CI 7/7 verde por API en `a26b364` (4ª ronda consecutiva) y suites
+  locales 100% replicadas antes de tocar nada (23 Go, 30 Python, 13
+  payloads, ruff, shellcheck, gofmt/vet/build, make).
+- Matriz comando×cliente sistemática (hallazgo sistémico #1) y auditoría
+  ABI 16/16/16 core.h↔Go↔Python por conteo.
+- Falso positivo del canal de render de nuevo en la ayuda Go
+  (`[ms]` aparentemente comido): verificado con grep -F que los bytes
+  están completos ×3 en disco — la lección ADR 18 se aplica y se
+  refuerza (verificar SIEMPRE bytes, nunca el render).
+- El editor del agente convirtió TABs→espacios en el Makefile (2ª vez
+  en 2 rondas): detectado por `make -n`, restaurado vía git checkout +
+  re-aplicación con Python preservando \t. Política: editar el
+  Makefile SOLO con scripts que preserven bytes.
+
 ## [3.8] — 2026-09-15
 
 Ronda 5 del agente único. Prioridad: **paridad de los dos clientes y

